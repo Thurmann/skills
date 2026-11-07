@@ -1,21 +1,27 @@
-# Skills
+# Skills and tools
 
-A collection of self-contained Codex skills. Each skill lives under `skills/<skill-name>/` and can be copied into a Codex skills directory on its own.
+This repository is the source of truth for personal skills and related tools.
+
+- `skills/<skill-name>/` contains portable agent skills.
+- `bridge/` contains the fix-code Slack bridge application.
+- `scripts/install-skills.py` installs the skills to Codex and, when present, Claude Code.
 
 ## Skills
 
+- [`fix-code`](skills/fix-code/SKILL.md) — fix bugs, implement features, or build repositories with isolated Git branches and pull requests.
 - [`travel-vlog`](skills/travel-vlog/SKILL.md) — plan, edit, render, and verify chronological travel vlogs made from real footage.
 
-## Install a skill
+## Install the skills
 
-Copy the skill folder into your Codex skills directory, then restart the Codex session so it can discover the new skill:
+Run the installer after changing the source skills:
 
 ```bash
-mkdir -p ~/.codex/skills
-cp -R skills/travel-vlog ~/.codex/skills/
+./scripts/install-skills.py
 ```
 
-For multiple skills, copy each selected folder from `skills/`. Keep project footage, proxies, render outputs, and personal production records out of this repository.
+It updates matching skill folders in the active Codex home, `~/.agents/skills`, and `~/.codex/skills`. It also updates `~/.claude/skills` when Claude Code is present. It keeps unrelated installed skills and supports `--dry-run`.
+
+Start a new agent session after installation so it discovers the updated skills. Keep project footage, proxies, render outputs, and personal production records out of this repository.
 
 ## Validate
 
