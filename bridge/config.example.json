@@ -1,0 +1,49 @@
+{
+  "teamId": "T_REPLACE",
+  "allowedUsers": [
+    "U_REPLACE"
+  ],
+  "allowedChannels": [
+    "C_REPLACE"
+  ],
+  "runtime": "codex",
+  "skillPath": "./skills/fix-code",
+  "stateDir": "./state",
+  "codexPath": "codex",
+  "claudePath": "claude",
+  "pythonPath": "python3",
+  "ghPath": "gh",
+  "allowNetwork": true,
+  "repositoryRouting": {
+    "mode": "channel",
+    "cloneRoot": "./state/repositories",
+    "localRoot": "~/workspace",
+    "allowedOwners": [],
+    "channelOwners": {}
+  },
+  "timeoutMs": 1800000,
+  "maxRepairRounds": 2,
+  "models": {
+    "codex": {
+      "architect": "gpt-6.1-sol",
+      "implementer": "gpt-6-luna",
+      "reviewer": "gpt-6.1-sol"
+    },
+    "claude": {
+      "architect": "opus",
+      "implementer": "haiku",
+      "reviewer": "opus"
+    }
+  },
+  "allowedModels": {
+    "codex": [
+      "gpt-6.1-sol",
+      "gpt-6-luna"
+    ],
+    "claude": [
+      "opus",
+      "sonnet",
+      "haiku"
+    ]
+  }
+}

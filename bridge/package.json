@@ -1,0 +1,18 @@
+{
+  "name": "fix-code-slack-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Slack Socket Mode task bridge for the fix-code coding skill",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/cli.js start",
+    "doctor": "node --env-file-if-exists=.env src/cli.js doctor",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/cli.js && node --check src/bridge.js && node --check src/runner.js && node --check src/store.js"
+  },
+  "dependencies": {
+    "@slack/socket-mode": "^2.0.0",
+    "@slack/web-api": "^7.0.0"
+  }
+}
