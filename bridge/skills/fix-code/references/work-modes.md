@@ -10,7 +10,7 @@ Turn the request into observable acceptance criteria. Architect the data model, 
 
 ## New repository / whole project
 
-Inspect the requested destination before creation. Settle the goal, core user flow, smallest coherent architecture, dependency choices, and verification path. Resolve genuine product questions early while continuing scaffold-independent work. Use the Git reference's non-main baseline for empty repositories.
+Inspect the requested destination before creation. Settle the goal, core user flow, smallest coherent architecture, dependency choices, and verification path. Resolve genuine product questions early while continuing scaffold-independent work. For a completely new empty repository, use the Git reference to initialize an empty `main` baseline, make it the local and hosted default, and perform implementation on a fresh task branch with a PR targeting `main`. These initialization and branch-delivery actions need no separate permission.
 
 Build a working end-to-end slice first, then expand through verified milestones. The final branch must contain runnable setup, dependencies/lockfiles appropriate to the stack, configuration examples without secrets, and enough launch/test documentation to reproduce the result. Use a persistent decision/task record for long work rather than relying on a huge coordinator transcript. Keep that record in the worktree and commit it only when useful to the deliverable.
 

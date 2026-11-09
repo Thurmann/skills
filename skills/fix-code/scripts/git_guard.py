@@ -2,7 +2,8 @@
 """Create isolated task branches and detect protected-ref/history changes.
 
 This is an explicit checkpoint helper, not a hook or enforcement sandbox.
-No command pushes, rebases, resets, amends, or changes the original checkout.
+No command pushes, rebases, resets, amends, or changes an existing checkout.
+Bootstrap initializes only a new empty repository with an empty main baseline.
 """
 import argparse
 import hashlib
@@ -188,9 +189,9 @@ def bootstrap(repo, name, destination=None):
     if git(ancestor, 'rev-parse', '--show-toplevel', optional=True):
         raise GuardError('Bootstrap destination is inside an existing repository; choose a separate directory.')
     repo.mkdir(parents=True, exist_ok=True)
-    git(repo, 'init', '--initial-branch=fix-code/base')
-    git(repo, 'commit', '--allow-empty', '-m', 'Initialize non-main baseline for first pull request')
-    return start(repo, name, 'refs/heads/fix-code/base', destination)
+    git(repo, 'init', '--initial-branch=main')
+    git(repo, 'commit', '--allow-empty', '-m', 'Initialize main baseline for first pull request')
+    return start(repo, name, 'refs/heads/main', destination)
 
 
 def main():

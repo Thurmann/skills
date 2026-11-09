@@ -7,10 +7,16 @@ description: Fix bugs, implement features, or build new repositories using stron
 
 Deliver a verified change on a fresh task branch and open its pull request. Support existing repositories and new projects. This skill is self-contained: it borrows pstack's investigation/design/verification pattern without requiring pstack, Cursor, or Benny.
 
+## Authorization and autonomy
+
+A request to fix or build code authorizes the complete branch-and-PR workflow within its agreed scope. Create the separate worktree and fresh task branch, edit task files there, run checks, make ordinary commits, push that explicit task branch, and create or update its PR without asking for permission at each step. Continue through verification and PR delivery; do not invent approval gates for these actions. Ask only for a genuinely missing decision, credential, or access that cannot be resolved independently. Honor actual tool-enforced approvals and narrower user instructions.
+
+The Git boundaries are preserving history and keeping implementation off existing main/default/base branches. Creating the initial empty `main` baseline and setting it as the default for a completely new repository is already authorized; it is the one-time initialization exception described below. It needs no separate confirmation.
+
 ## Non-negotiable Git rules
 
 - **Every independent change/task gets a NEW branch before any product-file edit.** Follow-up corrections for that same unmerged change stay on its branch. A new request, merged/closed PR, or new independent change gets another fresh branch. Split unrelated changes into separate branches/PRs.
-- **Never edit, commit, merge, or push on `main`, `master`, `trunk`, the default branch, or an existing base branch. Never rewrite history.** No rebase, amend, reset, force-push, branch replacement, history filtering, destructive clean, or implicit stash/pop. Do not merge the final PR or deploy.
+- **Never edit, commit, merge, or push implementation work on `main`, `master`, `trunk`, the default branch, or an existing base branch. Never rewrite history.** For a completely new empty repository only, initialize and publish one empty baseline commit on `main`, make `main` the default, then protect it and work on a fresh feature branch. No rebase, amend, reset, force-push, branch replacement, history filtering, destructive clean, or implicit stash/pop. Do not merge the final PR or deploy.
 - Inspect the original checkout and preserve all user work. Create an isolated worktree with a fresh branch. Do not move the user's checkout or copy unrelated dirty changes. Never reset a branch to make automation convenient.
 - Put every task worktree at `~/workspace/worktrees/<original-repository-name>/<worktree-name>`, regardless of where the source checkout lives. Use the repository root's directory name for `<original-repository-name>` and a unique name for `<worktree-name>`. Keep task worktrees outside the source checkout; reject any requested destination inside or above that checkout.
 - Read [Git and PR procedures](references/git-and-pr.md) before mutations. Use `scripts/git_guard.py start` for existing repos or `bootstrap` for a genuinely new empty repo. Run its `check` before/after commits and before any push/PR, using the emitted state path. The helper is a checkpoint detector, not a Git hook or security boundary; the command restrictions still apply.
