@@ -143,16 +143,34 @@ class GitGuardTests(unittest.TestCase):
         self.git(self.repo, 'update-ref', 'refs/heads/release', self.git(worktree, 'rev-parse', 'HEAD'))
         self.assertIn('release', self.guard('check', '--state', state['state'], expected=2)['error'])
 
-    def test_bootstraps_without_creating_main(self):
+    def test_bootstraps_main_default_and_isolates_implementation(self):
         empty = self.root/'new-project'
         state = self.guard('bootstrap', '--repo', empty, '--name', 'first implementation',
                            '--worktree', self.root/'worktrees'/'bootstrap')
+        baseline = self.git(empty, 'rev-parse', 'refs/heads/main')
+        self.assertEqual(self.git(empty, 'symbolic-ref', '--short', 'HEAD'), 'main')
+        self.assertEqual(state['base'], 'refs/heads/main')
+        self.assertEqual(self.git(empty, 'ls-tree', '--name-only', 'main'), '')
+        self.assertEqual(self.git(empty, 'rev-list', '--count', 'main'), '1')
+        self.assertNotEqual(state['branch'], 'main')
         self.task_commit(state)
         self.guard('check', '--state', state['state'])
-        branches = self.git(empty, 'for-each-ref', '--format=%(refname)', 'refs/heads')
-        self.assertIn('refs/heads/fix-code/base', branches)
-        self.assertNotIn('refs/heads/main\n', branches+'\n')
-        self.git(state['worktree'], 'merge-base', '--is-ancestor', 'fix-code/base', 'HEAD')
+        self.assertEqual(self.git(empty, 'rev-parse', 'main'), baseline)
+        self.assertEqual(self.git(empty, 'status', '--porcelain'), '')
+        branches = self.git(empty, 'for-each-ref', '--format=%(refname)', 'refs/heads').splitlines()
+        self.assertIn('refs/heads/main', branches)
+        self.assertNotIn('refs/heads/fix-code/base', branches)
+        self.git(state['worktree'], 'merge-base', '--is-ancestor', 'main', 'HEAD')
+
+    def test_bootstrap_main_is_protected_after_initialization(self):
+        empty = self.root/'new-project'
+        state = self.guard('bootstrap', '--repo', empty, '--name', 'first implementation',
+                           '--worktree', self.root/'worktrees'/'bootstrap-protection')
+        worktree = self.task_commit(state)
+        # Deliberate violation in a disposable fixture, never a user repository.
+        self.git(empty, 'update-ref', 'refs/heads/main', self.git(worktree, 'rev-parse', 'HEAD'))
+        result = self.guard('check', '--state', state['state'], expected=2)
+        self.assertIn('Protected ref changed: refs/heads/main', result['error'])
 
     def test_bootstrap_refuses_nonempty_directory(self):
         target = self.root/'not-empty'
