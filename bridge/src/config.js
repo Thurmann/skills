@@ -54,6 +54,8 @@ export function loadConfig(filename) {
   c.stateDir = absolute(c.stateDir || './state', directory);
   c.timeoutMs ??= 1800000;
   c.maxRepairRounds ??= 2;
+  c.statusIntervalMs ??= 300000;
+  if (!Number.isInteger(c.statusIntervalMs) || c.statusIntervalMs < 60000 || c.statusIntervalMs > 86400000) throw new Error('statusIntervalMs must be between 60000 and 86400000.');
   if (!Number.isInteger(c.timeoutMs) || c.timeoutMs < 1000 || c.timeoutMs > 86400000) throw new Error('timeoutMs must be between 1000 and 86400000.');
   if (!Number.isInteger(c.maxRepairRounds) || c.maxRepairRounds < 0 || c.maxRepairRounds > 3) throw new Error('maxRepairRounds must be 0..3.');
   if (typeof c.allowNetwork !== 'boolean') throw new Error('Set allowNetwork explicitly to true or false.');
