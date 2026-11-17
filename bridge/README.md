@@ -2,14 +2,14 @@
 
 Send a task from Slack on your phone, let a local coding runner use `fix-code`, and receive a draft pull request in the same Slack thread.
 
-This bridge uses Slack Socket Mode, a durable SQLite queue, and the Codex CLI by default. It includes a Claude Code adapter. It creates an isolated branch/worktree before coding and orchestrates a read-only precheck that classifies each task as simple, medium, or advanced → implementation → independent review only where the mode requires it (advanced always adds architecture first) → controlled branch push → draft PR.
+This bridge uses Slack Socket Mode, a durable SQLite queue, and a local coding CLI: Claude Code, Codex, Gemini CLI, or opencode (see [Providers](#providers)). It creates an isolated branch/worktree before coding and orchestrates a read-only precheck that classifies each task as simple, medium, or advanced → implementation → independent review only where the mode requires it (advanced always adds architecture first) → controlled branch push → draft PR.
 
 **Status:** implementation and local fixture tests are complete. Live Slack delivery, model execution, and GitHub publication require your configuration and have not been exercised by the offline test suite. No background service is enabled automatically.
 
 ## Requirements
 
 - macOS or Linux, Node.js **22.13+** (Node 24 LTS recommended), Python 3, and Git.
-- Codex CLI installed and authenticated (`codex login status`), or Claude Code installed/authenticated if you select that runtime.
+- At least one supported coding CLI installed and authenticated: Claude Code, Codex (`codex login status`), Gemini CLI, or opencode.
 - GitHub CLI authenticated (`gh auth status`) with access to the repositories you want the bridge to use. Channel routing requires push permission for the selected repository.
 - A Slack workspace where the app can read public/private channel metadata, plus your allowed user/channel/workspace IDs.
 
@@ -64,6 +64,7 @@ Replace every placeholder in the generated configuration:
 - `repositoryRouting.allowedOwners` (optional): GitHub owners the channel resolver may select. An empty list allows any matching repository the `gh` account can access.
 - `repositoryRouting.channelOwners` (optional): channel ID to owner hints, for example `{"C123": "example-org"}`, to disambiguate same-named repositories.
 - `repositories`: used only in explicit `aliases` mode for older configurations.
+- `runtimes`: one entry per provider you use, see [Providers](#providers). The older top-level `models`/`allowedModels`/`codexPath`/`claudePath` keys still work.
 - `models`: precheck/architecture/implementation/review defaults for the selected runtime. `precheck` is optional and defaults to the implementer model; every value must be in `allowedModels`.
 - `allowedModels`: explicit override allowlists, validated against the models you can actually run.
 
@@ -99,14 +100,46 @@ The example selects GPT-6.1 Sol for architecture/review, and GPT-6 Luna for prec
 
 Keep `stateDir` private and outside the configured source repositories. It contains the task database, private evidence, and runner session IDs. Task worktrees are stored separately under `~/workspace/worktrees/<repository-directory-name>/<worktree-name>`. Do not delete state while tasks exist. Use a dedicated coding account/container if you need stronger separation: removing Slack tokens from child environments does not prevent processes under the same OS user from reading accessible files.
 
+## Providers
+
+| Runtime | Read-only phases | Implementer | Notes |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode plan`, tools limited to Read/Glob/Grep | `acceptEdits` with an explicit tool allowlist | Network policy is an instruction only. |
+| `codex` | `--sandbox read-only` | `workspace-write` sandbox plus the Git common dir | Honors `allowNetwork` in the sandbox. |
+| `gemini` | `--approval-mode plan` plus a policy file denying `write_file`, `replace` and `run_shell_command` | `--approval-mode auto_edit` plus a policy allowing those tools, and `--skip-trust` | No effort flag (`effort` is ignored). Web tools are denied by policy when `allowNetwork` is false. The policy file is written into the task's private artifact directory, outside the worktree. |
+| `opencode` | `OPENCODE_CONFIG_CONTENT` permission rules deny everything except read/glob/grep | Rules also allow edit, shell, subagent and skill | Runs `opencode run --standalone --format json`, so this run's environment and config apply only to it. No effort flag. Web tools are allowed only when `allowNetwork` is true. |
+
+Caveats:
+
+- Gemini's `--skip-trust` is folder trust, not an approval bypass. Without it, an untrusted folder forces `default` approval mode and the headless implementer could not edit or commit. The task worktree's project `.gemini/` settings are therefore honored, the same exposure as Claude's project settings.
+- opencode rejects every permission request that is not pre-allowed (the bridge never passes `--auto`). Project config and Claude Code compatibility files are disabled via environment variables. Its permissions allow `external_directory` because the skill files and evidence live outside the worktree. Provider API keys are user-chosen variables: list their names under `runtimes.opencode.env`.
+- No runtime is ever launched with yolo, `--auto`, `--dangerously-skip-permissions` or other approval-bypass flags; tests assert this.
+- As defense in depth, the bridge itself checks `HEAD` and `git status` around every non-implementer phase and fails the job, preserving the worktree, if a read-only phase changed anything, whatever the provider.
+
+Configuration, with the `runtimes` layout:
+
+```json
+"runtimePriority": ["claude", "codex", "gemini", "opencode"],
+"runtimes": {
+  "gemini": { "path": "gemini", "models": { "architect": "gemini-2.5-pro", "implementer": "gemini-2.5-flash", "reviewer": "gemini-2.5-pro" }, "allowedModels": ["gemini-2.5-pro", "gemini-2.5-flash"], "env": ["GEMINI_API_KEY"] }
+}
+```
+
+`env` lists extra environment variable names forwarded to that provider (uppercase names, never `SLACK_*`). Built-in provider variables (such as `OPENAI_API_KEY` or `GEMINI_API_KEY`) are always forwarded to their own provider only. The legacy layout (`codexPath`, `claudePath`, `models.<name>`, `allowedModels.<name>`) keeps working; `runtimes.<name>` overrides it. A provider counts as configured when it has models.
+
+Default runtime precedence: `start --runtime <name>` (or `doctor --runtime`), then an explicit `"runtime"` in `config.json`, then the first configured provider in `runtimePriority` whose CLI answers `--version`. An explicit choice whose CLI is unavailable is an error; there is no silent fallback. Configured providers missing from `runtimePriority` are appended in registry order.
+
+**Behavior change:** with both Claude and Codex configured and no explicit `runtime`, the default is now `claude` (it was `codex`). Set `"runtime": "codex"` to keep the old behavior. Tasks keep the runtime they started with.
+
 ## 4. Run diagnostics, then connect
 
 ```bash
 npm run doctor
 npm start
+node src/cli.js start --runtime gemini   # optional: override the default runtime for this run
 ```
 
-`doctor` checks local tools/authentication, the skill/helper, repository routing, and presence of token-shaped values. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
+`doctor` checks local tools/authentication (every configured provider CLI, so delete providers you do not use from `runtimes`) and reports which default runtime would be selected, the skill/helper, repository routing, and presence of token-shaped values. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
 
 Leave the terminal open and keep the host awake/online. To keep a plugged-in Mac available for a supervised session, you can run the start command under `caffeinate`:
 
@@ -166,7 +199,7 @@ In that task's thread:
 - `cancel` stops the active process group and cancels queued follow-ups for that task. Existing commits/pushes are preserved.
 - `status` reports the saved task state; it is not a fresh forge/CI audit.
 - `help` returns command guidance.
-- `runtime=claude` can be supplied on a new `run` when Claude is installed/configured. This adapter is fixture-tested; verify the real CLI in a test channel before relying on it.
+- `runtime=<claude|codex|gemini|opencode>` can be supplied on a new `run` when that provider is configured and its CLI is available on the host; otherwise the bridge replies that it is unavailable. The adapters are fixture-tested; verify each real CLI in a test channel before relying on it.
 
 Every PR the bridge creates gets the `AI` and `fix-code` labels (created in the repository only if missing); if they cannot be applied, the PR is still created and its body says so.
 

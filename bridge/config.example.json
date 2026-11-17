@@ -6,11 +6,14 @@
   "allowedChannels": [
     "C_REPLACE"
   ],
-  "runtime": "codex",
+  "runtimePriority": [
+    "claude",
+    "codex",
+    "gemini",
+    "opencode"
+  ],
   "skillPath": "./skills/fix-code",
   "stateDir": "./state",
-  "codexPath": "codex",
-  "claudePath": "claude",
   "pythonPath": "python3",
   "ghPath": "gh",
   "allowNetwork": true,
@@ -23,29 +26,62 @@
   },
   "timeoutMs": 1800000,
   "maxRepairRounds": 2,
-  "models": {
-    "codex": {
-      "precheck": "gpt-6-luna",
-      "architect": "gpt-6.1-sol",
-      "implementer": "gpt-6-luna",
-      "reviewer": "gpt-6.1-sol"
-    },
+  "runtimes": {
     "claude": {
-      "precheck": "haiku",
-      "architect": "opus",
-      "implementer": "haiku",
-      "reviewer": "opus"
+      "path": "claude",
+      "models": {
+        "precheck": "haiku",
+        "architect": "opus",
+        "implementer": "haiku",
+        "reviewer": "opus"
+      },
+      "allowedModels": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ]
+    },
+    "codex": {
+      "path": "codex",
+      "models": {
+        "precheck": "gpt-6-luna",
+        "architect": "gpt-6.1-sol",
+        "implementer": "gpt-6-luna",
+        "reviewer": "gpt-6.1-sol"
+      },
+      "allowedModels": [
+        "gpt-6.1-sol",
+        "gpt-6-luna"
+      ]
+    },
+    "gemini": {
+      "path": "gemini",
+      "models": {
+        "precheck": "gemini-2.5-flash",
+        "architect": "gemini-2.5-pro",
+        "implementer": "gemini-2.5-flash",
+        "reviewer": "gemini-2.5-pro"
+      },
+      "allowedModels": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash"
+      ]
+    },
+    "opencode": {
+      "path": "opencode",
+      "models": {
+        "precheck": "anthropic/claude-haiku-4-5",
+        "architect": "anthropic/claude-opus-4-5",
+        "implementer": "anthropic/claude-haiku-4-5",
+        "reviewer": "anthropic/claude-opus-4-5"
+      },
+      "allowedModels": [
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-haiku-4-5"
+      ],
+      "env": [
+        "ANTHROPIC_API_KEY"
+      ]
     }
-  },
-  "allowedModels": {
-    "codex": [
-      "gpt-6.1-sol",
-      "gpt-6-luna"
-    ],
-    "claude": [
-      "opus",
-      "sonnet",
-      "haiku"
-    ]
   }
 }
