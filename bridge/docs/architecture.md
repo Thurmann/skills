@@ -1,7 +1,7 @@
 # Architecture and operating boundaries
 
 - `cli.js`: local configuration, transactional SQLite single-process lease, Socket Mode connection, explicit envelope acknowledgment, worker/outbox timers, diagnostics.
-- `protocol.js`: anchored bot command grammar and options parsed only before `--`; output escaping.
+- `protocol.js`: anchored bot command grammar and options parsed only before the separator (`|`, or `--`/`—`/`–`); a plain mention without a command keyword is request data (new task at top level, followup in a task thread); output escaping.
 - `store.js`: SQLite WAL, event deduplication, task/job state and durable outbox. State files are private; no secret token values belong in the database.
 - `repository-router.js`: authoritative Slack channel metadata lookup, exact case-insensitive repository-name matching over paginated `gh` results, owner/hint filtering, permission checks, optional validated local checkout reuse, and GitHub-ID-keyed managed clones.
 - `bridge.js`: authorization, immutable thread/repository binding, owner/operator controls, serial queue, bounded phase orchestration, cancellation and recovery.

@@ -118,20 +118,30 @@ No login agent, cron job, or system service is installed. First test in a dedica
 
 ## Slack commands
 
-Start each independent task with a **new top-level mention**. In the default channel mode, no repository option is needed:
+Start each independent task with a **new top-level mention**. `--`, `—` and `–` are also accepted, because Slack and phone keyboards often autocorrect `--` into a dash.
+
+In the default channel mode, no repository option is needed:
 
 ```text
-@Fix Code run -- Fix the duplicate retry bug. Reproduce it first and verify the fix.
+@Fix Code run | Fix the duplicate retry bug. Reproduce it first and verify the fix.
 ```
 
 For example, a mention in `#billing-service` resolves the exact case-insensitive repository name `billing-service`. `repo=<alias>` is rejected in channel mode; it remains available only with `repositoryRouting.mode: "aliases"`. Neither mode accepts an arbitrary repository path from Slack or automatically creates a GitHub repository. An unknown or empty remote is a blocking error. New features and fixes in the selected repository use the same command.
 
-Older configurations that remain in aliases mode continue to use commands such as `@Fix Code run repo=app -- Add CSV export.`
+Older configurations that remain in aliases mode continue to use commands such as `@Fix Code run repo=app | Add CSV export.`
 
-Override models **before** the separator:
+A plain mention without `run` also works. At top level it starts a task with default models and the automatic precheck; in a task's thread it is a followup on that task:
 
 ```text
-@Fix Code run architect_model=gpt-6.1-sol implementer_model=gpt-6-luna -- Add pagination.
+@Fix Code can you fix this small error: blabla
+```
+
+Plain mentions carry no options, so `key=value` text stays part of the request. Use the `run … |` or `followup … |` form to set options, for example `@Fix Code run mode=simple | Fix the typo.` Text after `run`/`followup` is read as options only when its first word looks like `key=value` (or it starts with the separator); otherwise the whole message, such as `run the linter and fix warnings`, is a plain request. Bare `status`, `cancel`, `retry` and `help` remain commands. In alias mode, start with `run repo=<alias> | <request>`.
+
+Override models **before** the separator (`|`):
+
+```text
+@Fix Code run architect_model=gpt-6.1-sol implementer_model=gpt-6-luna | Add pagination.
 ```
 
 `model=<id>` overrides every role; a role-specific option takes precedence. `precheck_model=<id>` overrides only the precheck role. Models must be in the configured runtime allowlist.
@@ -139,7 +149,7 @@ Override models **before** the separator:
 Complexity modes are selected before the separator too:
 
 ```text
-@Fix Code run mode=advanced -- Refactor the auth module.
+@Fix Code run mode=advanced | Refactor the auth module.
 ```
 
 - Without `mode=`, a read-only precheck classifies the task as `simple`, `medium`, or `advanced`. Unreadable precheck output falls back to `medium` with mandatory review. Missing confidence counts as `medium`. `risk_flags` hold only security, auth, data/migration, and concurrency; other context (public API, build/deploy) goes to `notes` and never affects the mode. Any risk flag forbids `simple`, two distinct risk categories make `advanced`, and low confidence together with a risk flag bumps one mode. Otherwise the model's mode is kept.
@@ -149,13 +159,13 @@ Complexity modes are selected before the separator too:
 - `medium`: no architect. Independent review runs only if there is no file prediction, the task was escalated, changed logic files exceed the prediction by 3 or more or by more than half, or `SCOPE_EXCEEDED` was reported.
 - `advanced`: architect → implementer → mandatory independent review with bounded repair rounds, as before.
 
-Every outcome is still a draft PR. Followups on an existing PR post the new job's outcome as a PR comment. The final Slack message and the PR body state the mode and whether independent review ran. **Trade-off:** `simple` jobs, and `medium` jobs whose changes stay within the prediction, publish a draft PR **without** independent review. Use `mode=advanced` when you want the full pipeline for a change. Logic files are changed files excluding tests, docs (`.md`/`.rst`/`.txt`, `docs/`) and lockfiles; predictions use the same definition. Each job records a calibration record (`calibration.json` in its artifact directory and on the job: the model's raw mode, mode after adjustment, final mode, predicted vs. changed/logic file counts, escalation, review) and the outcome line states predicted/actual logic files. Skill reading is per phase: precheck reads no skill files (its rules are inline); architect, implementer and reviewer read only the references they need and never `model-policy.md` or `integrations.md`. Text after `--` is request data and cannot set runner flags or model options. Model selection uses explicit phase-level CLI invocations, rather than relying on nested model delegation.
+Every outcome is still a draft PR. Followups on an existing PR post the new job's outcome as a PR comment. The final Slack message and the PR body state the mode and whether independent review ran. **Trade-off:** `simple` jobs, and `medium` jobs whose changes stay within the prediction, publish a draft PR **without** independent review. Use `mode=advanced` when you want the full pipeline for a change. Logic files are changed files excluding tests, docs (`.md`/`.rst`/`.txt`, `docs/`) and lockfiles; predictions use the same definition. Each job records a calibration record (`calibration.json` in its artifact directory and on the job: the model's raw mode, mode after adjustment, final mode, predicted vs. changed/logic file counts, escalation, review) and the outcome line states predicted/actual logic files. Skill reading is per phase: precheck reads no skill files (its rules are inline); architect, implementer and reviewer read only the references they need and never `model-policy.md` or `integrations.md`. Text after the separator is request data and cannot set runner flags or model options. Model selection uses explicit phase-level CLI invocations, rather than relying on nested model delegation.
 
 In that task's thread:
 
 ```text
-@Fix Code followup -- Also cover an empty result set.
-@Fix Code followup implementer_model=gpt-6.1-sol -- Diagnose the unresolved race.
+@Fix Code followup | Also cover an empty result set.
+@Fix Code followup implementer_model=gpt-6.1-sol | Diagnose the unresolved race.
 @Fix Code status
 @Fix Code cancel
 @Fix Code retry
