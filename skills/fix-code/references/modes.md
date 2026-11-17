@@ -1,6 +1,6 @@
 # Precheck and execution modes
 
-Every task runs in exactly one mode: **Simple**, **Medium**, or **Advanced**. The mode decides how many agents run, which models they use, and whether architect and reviewer passes are mandatory. Git, isolation, verification honesty, and PR delivery rules are identical in every mode.
+Every task runs in exactly one mode: **Simple**, **Medium**, or **Advanced**. The mode decides how many agents run, which models they use, and whether architect and reviewer passes are mandatory. Git, isolation, the full test suite gate, verification honesty, and PR delivery rules are identical in every mode.
 
 ## Precheck
 
@@ -37,7 +37,7 @@ Optimized for speed and the lowest token usage.
 - One agent does the whole task in one pass: frame, isolate, edit, verify, commit, push, and open the PR. Use the cheapest efficient model that can use the required coding and Git tools. If the caller already is that model, it may do the work itself; otherwise delegate the whole task to one implementer with a self-contained brief.
 - No architect and no reviewer. No multi-agent fan-out and no persistent plan record.
 - Keep context small: read only the files needed, and skip broad exploration.
-- Verify with the narrowest check that proves the behavior, such as the targeted test, a build, or one CLI/UI check of the changed element.
+- Verify with the narrowest check that proves the behavior, such as the targeted test, a build, or one CLI/UI check of the changed element, and also run the complete test suite before and after the change (see the full test suite gate in SKILL.md). Keeping context small never means skipping the full suite.
 - **Escalate** to Medium (or Advanced if it qualifies) and report why if any of these appear: the change needs more than about 3 logic files, a new interface or dependency, a risk flag, a failing fix that is not obvious after one repair, or an unclear root cause. Keep the existing branch and commits; continue under the new mode's rules. If the task is still in place, relocate it to a worktree first when escalating to Advanced, and also when escalating to Medium: an escalation trigger counts as "bigger than predicted" (see Mode changes).
 
 ## Medium
@@ -47,7 +47,7 @@ Optimized for balancing cost and correctness.
 - Workspace: start in place. The coordinator watches for the reviewer rule's "bigger than predicted" triggers while working, not only at final review, and as soon as one fires it commits and `relocates` to a worktree, then continues (and runs the reviewer).
 - The coordinator writes a short plan itself: acceptance criteria, units of work, and checks. The architect is not required. Consult it only for a bounded diagnosis after two failed repairs with the same unresolved cause, or when the work escalates to Advanced.
 - Delegate each bounded subtask to cheap implementer subagents with exact files, worktree, branch, finish condition, and a runnable acceptance check. Keep one writer per branch at a time; parallelize only read-only exploration.
-- Verify each unit before starting the next, then run the changed flow end to end.
+- Verify each unit before starting the next, then run the changed flow end to end and the complete test suite.
 - **Reviewer rule:** before committing the final change, compare the actual diff with the precheck prediction. Run a fresh reviewer on the diff and evidence if any of these are true:
   - the changed logic-file count (same definition as the prediction) exceeds the prediction by more than half, or by 3 or more files;
   - the diff touches modules/components that were not in `predicted_areas`;
@@ -64,7 +64,7 @@ Optimized for correctness. These rules are non-negotiable while the task is in A
 
 1. **Architect plans first.** Before any implementation edit, the architect role produces the plan: architecture or design decisions, interfaces, risks, staged units with acceptance checks, and the verification path. Keep this plan in a persistent task record in the worktree.
 2. **Cheap subagents implement.** Bounded units go to cheap, efficient implementer subagents, one writer per branch at a time. The coordinator and architect do not write bulk implementation. Each unit is verified before the next starts.
-3. **Independent review is mandatory.** A fresh reviewer subagent with an architect-class model inspects the full diff against the base, the plan, and the verification evidence. It must not be the same agent instance that wrote the plan or the code. Fix actionable findings on the task branch with new commits, rerun affected checks, and have the reviewer confirm the fixes. Do not open a non-draft PR before the review passes. If the review cannot run, open a draft PR and state the blocker.
+3. **Independent review is mandatory.** A fresh reviewer subagent with an architect-class model inspects the full diff against the base, the plan, and the verification evidence, including the baseline and final full-suite results. It must not be the same agent instance that wrote the plan or the code. Fix actionable findings on the task branch with new commits, rerun affected checks, and have the reviewer confirm the fixes. Do not open a non-draft PR before the review passes. If the review cannot run, open a draft PR and state the blocker.
 4. Use [change-type guidance](change-types.md) for new-repository and large-feature specifics, including end-to-end slices and milestone delivery.
 
 ## Mode changes

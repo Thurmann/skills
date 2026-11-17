@@ -20,4 +20,4 @@ Whole-project work is not permission to buy services, deploy, expose secrets, or
 
 ## Review and finish
 
-Match verification to risk, not line count. A one-line permission change deserves care; an obvious text edit may need only a targeted check. When the mode requires a reviewer, it inspects the diff/artifacts, not only author summaries. Fix real findings on the same task branch with new commits and rerun affected checks. If a check cannot run, show that limitation and choose draft delivery rather than inventing success.
+Match the targeted verification to risk, not line count. A one-line permission change deserves care; an obvious text edit may need only one targeted check beyond the full test suite, which runs for every change. When the mode requires a reviewer, it inspects the diff/artifacts, not only author summaries. Fix real findings on the same task branch with new commits and rerun affected checks. If a check cannot run, show that limitation and choose draft delivery rather than inventing success.

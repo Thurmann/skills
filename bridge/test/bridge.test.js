@@ -461,7 +461,7 @@ test('run rejects a runtime that is not configured or available, and help lists 
   assert.ok(f.posts.some(p => /Runtime claude is not configured or its CLI is unavailable/.test(p.text)));
   await f.bridge.receive({ ...event('<@UBOT> help'), event_id: 'Ev2', event: { ...event('<@UBOT> help').event, ts: '123.5' } });
   await f.bridge.flushOutbox();
-  assert.ok(f.posts.some(p => /runtime=codex \(default codex\)/.test(p.text)));
+  assert.ok(f.posts.some(p => /runtime=codex \(default codex; run only\)/.test(p.text)));
 });
 
 test('followup and retry also reject a task runtime that is no longer available', async t => {
@@ -505,4 +505,36 @@ test('readonlySnapshot works on a real repo with nested repos and dangling symli
   assert.match(first, /nested\/\0dir/);
   fs.writeFileSync(path.join(root, 'plain.txt'), 'two');
   assert.notEqual(await readonlySnapshot(git, root), first);
+});
+
+test('channel mode: a plain top-level mention starts a run task with default models', async t => {
+  const f = fixture(t); channelMode(f);
+  const accepted = await f.bridge.receive(event('<@UBOT> can you fix this small error: blabla'));
+  assert.equal(accepted.accepted, true);
+  const task = f.store.getTask(accepted.taskId);
+  assert.equal(task.initialRequest, 'can you fix this small error: blabla');
+  assert.deepEqual(task.models, { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'strong' });
+  assert.equal(f.store.listJobs().length, 1);
+  assert.equal(f.store.jobsForTask(accepted.taskId)[0].request, 'can you fix this small error: blabla');
+});
+
+test('channel mode: a plain mention in a task thread queues a followup on the same task', async t => {
+  const f = fixture(t); channelMode(f);
+  const started = await f.bridge.receive(event('<@UBOT> can you fix this small error: blabla'));
+  const followup = await f.bridge.receive({ ...event('<@UBOT> also add a test', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  assert.equal(followup.accepted, true);
+  assert.equal(followup.taskId, started.taskId);
+  const jobs = f.store.jobsForTask(started.taskId);
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[1].request, 'also add a test');
+  assert.equal(f.store.listTasks().length, 1);
+});
+
+test('alias mode: a plain top-level mention replies with the alias-mode hint and creates no task', async t => {
+  const f = fixture(t);
+  const accepted = await f.bridge.receive(event('<@UBOT> can you fix this small error: blabla'));
+  assert.equal(accepted.accepted, true);
+  assert.equal(f.store.listJobs().length, 0);
+  assert.equal(f.store.listTasks().length, 0);
+  assert.match(f.store.listOutbox()[0].text, /In alias mode, start a task with run repo=<alias>/);
 });
