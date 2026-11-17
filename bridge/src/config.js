@@ -4,7 +4,7 @@ import os from 'node:os';
 import { parseEnv } from 'node:util';
 import { DEFAULT_PRIORITY, providerNames } from './providers/index.js';
 
-export const bundledSkill = path.resolve(import.meta.dirname, '../skills/fix-code');
+export const defaultSkill = path.resolve(import.meta.dirname, '../../skills/fix-code');
 export const configHome =(env = process.env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'fix-code-bridge');
 /** Config lookup: --config, FIX_CODE_CONFIG, ./config.json, then the per-user config directory. */
 export function findConfig(filename, env = process.env, cwd = process.cwd()) {
@@ -49,7 +49,7 @@ export function loadConfig(filename) {
   const names = providerNames();
   c.runtimeExplicit = Boolean(c.runtime);
   if (c.runtimeExplicit && !names.includes(c.runtime)) throw new Error(`runtime must be one of: ${names.join(', ')}.`);
-  c.skillPath = c.skillPath ? absolute(c.skillPath, directory) : bundledSkill;
+  c.skillPath = c.skillPath ? absolute(c.skillPath, directory) : defaultSkill;
   if (!fs.existsSync(path.join(c.skillPath, 'SKILL.md')) || !fs.existsSync(path.join(c.skillPath, 'scripts/git_guard.py'))) throw new Error('The installed fix-code skill and Git helper are required.');
   c.stateDir = absolute(c.stateDir || './state', directory);
   c.timeoutMs ??= 1800000;

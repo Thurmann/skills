@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, resolveModels, selectDefaultRuntime, findConfig, loadEnvBeside, configHome, bundledSkill } from '../src/config.js';
+import { loadConfig, resolveModels, selectDefaultRuntime, findConfig, loadEnvBeside, configHome, defaultSkill } from '../src/config.js';
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-config-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const config = { teamId: 'T123', allowedUsers: ['U123'], allowedChannels: ['C123'], runtime: 'codex', allowNetwork: true, skillPath: path.resolve(import.meta.dirname, '../skills/fix-code'), models: { codex: { architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] }, repositories: { app: { path: dir, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' } } };
+  const config = { teamId: 'T123', allowedUsers: ['U123'], allowedChannels: ['C123'], runtime: 'codex', allowNetwork: true, skillPath: path.resolve(import.meta.dirname, '../../skills/fix-code'), models: { codex: { architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] }, repositories: { app: { path: dir, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' } } };
   const filename = path.join(dir, 'config.json');
   const save = () => { fs.writeFileSync(filename, JSON.stringify(config)); return filename; };
   return { dir, config, save };
@@ -186,7 +186,7 @@ test('loadEnvBeside reads the .env next to the config without overriding set var
   assert.deepEqual(env, { SLACK_BOT_TOKEN: 'xoxb-already-set', SLACK_APP_TOKEN: 'xapp-file' });
 });
 
-test('a config without skillPath uses the bundled skill', t => {
+test('a config without skillPath uses the repository skill', t => {
   const f = fixture(t); delete f.config.skillPath;
-  assert.equal(loadConfig(f.save()).skillPath, bundledSkill);
+  assert.equal(loadConfig(f.save()).skillPath, defaultSkill);
 });
