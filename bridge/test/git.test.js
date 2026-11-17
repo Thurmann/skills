@@ -121,14 +121,14 @@ test('real isolated worktree and guarded publication use only explicit task ref 
   assert.ok(calls.some(a => a[0] === 'body' && a[1].includes('Followup verified.')));
   assert.ok(calls.find(a => a[0] === 'pr' && a[1] === 'create').includes('--draft'));
   const creates = calls.filter(a => a[0] === 'label' && a[1] === 'create');
-  assert.deepEqual(creates.map(a => a[2]), ['AI', 'fix-code']); // created once, on first publication only
+  assert.deepEqual(creates.map(a => a[2]), ['AI', 'fix-code', 'slack-bridge']); // created once, on first publication only
   assert.ok(creates.every(a => !a.includes('--force')));
-  assert.deepEqual(creates.map(a => a[a.indexOf('--color') + 1]), ['5319e7', '0e8a16']);
+  assert.deepEqual(creates.map(a => a[a.indexOf('--color') + 1]), ['5319e7', '0e8a16', '1d76db']);
   const prCreate = calls.find(a => a[0] === 'pr' && a[1] === 'create');
-  assert.equal(prCreate.join(' ').includes('--label AI --label fix-code'), true);
+  assert.equal(prCreate.join(' ').includes('--label AI --label fix-code --label slack-bridge'), true);
   const edits = calls.filter(a => a[0] === 'pr' && a[1] === 'edit');
   assert.equal(edits.length, 1);
-  assert.ok(edits[0].join(' ').includes('--add-label AI --add-label fix-code'));
+  assert.ok(edits[0].join(' ').includes('--add-label AI --add-label fix-code --add-label slack-bridge'));
   assert.ok(JSON.parse(fs.readFileSync(labelState, 'utf8')).some(l => l.name === 'bug'));
   const pushes = fs.readFileSync(gitLog, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(pushes.length, 2);
@@ -176,8 +176,8 @@ test('existing ready PR is demoted with pr ready --undo when unverified, and pro
 test('an existing label is not re-created', async t => {
   const { task, config, artifacts, calls } = await fixture(t, { labels: '[{"name":"AI"},{"name":"bug"}]' });
   await publishPR(config, task, 'Verified.', artifacts);
-  assert.deepEqual(calls().filter(a => a[0] === 'label' && a[1] === 'create').map(a => a[2]), ['fix-code']);
-  assert.ok(calls().find(a => a[0] === 'pr' && a[1] === 'create').join(' ').includes('--label AI --label fix-code'));
+  assert.deepEqual(calls().filter(a => a[0] === 'label' && a[1] === 'create').map(a => a[2]), ['fix-code', 'slack-bridge']);
+  assert.ok(calls().find(a => a[0] === 'pr' && a[1] === 'create').join(' ').includes('--label AI --label fix-code --label slack-bridge'));
 });
 
 test('PR is still created without labels when label listing fails', async t => {

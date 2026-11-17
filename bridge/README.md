@@ -215,7 +215,7 @@ In that task's thread:
 - `help` returns command guidance.
 - `runtime=<claude|codex|gemini|opencode>` can be supplied on a new `run` when that provider is configured and its CLI is available on the host; otherwise the bridge replies that it is unavailable. The adapters are fixture-tested; verify each real CLI in a test channel before relying on it.
 
-Every PR the bridge creates gets the `AI` and `fix-code` labels (created in the repository only if missing); if they cannot be applied, the PR is still created and its body says so.
+Every PR the bridge creates or reuses gets the `AI`, `fix-code` and `slack-bridge` labels (`slack-bridge` marks PRs created through the bridge; created in the repository only if missing); if they cannot be applied, the PR is still created and its body says so.
 
 A merged/closed PR needs a new top-level task and a new branch. A PR that is already ready for review is reused: the bridge returns it to draft if the new job's verification is incomplete, and keeps (or promotes a draft to) ready when it is complete.
 
