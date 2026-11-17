@@ -234,6 +234,8 @@ The SQLite queue records event IDs and jobs transactionally before acknowledging
 
 A restart marks in-flight attempts interrupted rather than automatically running them again. If the recorded runner still appears alive, startup stops for local inspection. A crash after worktree creation is reconciled against the Git guard checkpoint; unknown existing directories are not overwritten.
 
+Each run posts two thread replies: an acknowledgement (task ID, repository, provider) once the repository is known, and a final result with the precheck decision, mode, review outcome and the implementer's summary. A run that ends with no commits and a clean worktree (a question, or nothing to change) succeeds with the implementer's answer and publishes no PR.
+
 Slack replies use a persistent outbox and original thread coordinates. Rate limits get bounded retries. A connection failure after a possible send is marked **uncertain** rather than blindly resent; exactly-once external delivery is not claimed.
 
 Inspect local state:
