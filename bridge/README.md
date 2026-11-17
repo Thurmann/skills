@@ -26,7 +26,7 @@ node src/cli.js init
 
 `init` creates `config.json` and `.env` in `~/.config/fix-code-bridge/` (or `$XDG_CONFIG_HOME/fix-code-bridge/`) with private permissions and preserves existing files. They live outside the repository, so updates and worktrees never touch them. Edit them locally; never paste tokens into a chat or commit them. `init --config /some/dir/config.json` creates them in another directory instead.
 
-Every command finds its configuration in this order: `--config <path>`, `FIX_CODE_CONFIG`, `./config.json` in the current directory (older setups), then `~/.config/fix-code-bridge/config.json`. The `.env` next to the chosen `config.json` is loaded automatically; variables already set in the environment (or by `npm start`'s `./.env`) win. Relative paths in `config.json`, such as `stateDir: "./state"`, resolve against the config file's directory, so state also lives in `~/.config/fix-code-bridge/state` by default. Without `skillPath`, the bridge uses the repository's `skills/fix-code` next to the code it runs from; set it (absolute, or relative to the config file) only to use another reviewed installation.
+Every command finds its configuration in this order: `--config <path>`, `FIX_CODE_CONFIG`, `./config.json` in the current directory (older setups), then `~/.config/fix-code-bridge/config.json`. The `.env` next to the chosen `config.json` is loaded automatically; variables already set in the environment win. Relative paths in `config.json`, such as `stateDir: "./state"`, resolve against the config file's directory, so state also lives in `~/.config/fix-code-bridge/state` by default. Without `skillPath`, the bridge uses the repository's `skills/fix-code` next to the code it runs from; set it (absolute, or relative to the config file) only to use another reviewed installation.
 
 ## 2. Create the Slack app
 
@@ -239,14 +239,14 @@ Slack replies use a persistent outbox and original thread coordinates. Rate limi
 Inspect local state:
 
 ```bash
-node --env-file-if-exists=.env src/cli.js status
-node --env-file-if-exists=.env src/cli.js outbox
+node src/cli.js status
+node src/cli.js outbox
 ```
 
 For an uncertain reply, inspect Slack first. With the bridge stopped, explicitly retry only when it was not delivered:
 
 ```bash
-node --env-file-if-exists=.env src/cli.js outbox retry OUTBOX_ID --confirmed-not-delivered
+node src/cli.js outbox retry OUTBOX_ID --confirmed-not-delivered
 ```
 
 Ctrl+C sends a graceful shutdown/cancel request. Do not delete worktrees or state to resolve a failure. If publication had started, inspect the actual branch and PR before retrying. Existing PR lookup prevents normal retry duplication, but remote effects cannot be atomically committed with SQLite.
