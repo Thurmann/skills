@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, resolveModels } from '../src/config.js';
+import { loadConfig, resolveModels, selectDefaultRuntime } from '../src/config.js';
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-config-'));
@@ -101,4 +101,61 @@ test('localRoot is optional, expands home paths, and must already be a directory
   assert.throws(() => loadConfig(f.save()), /existing directory/);
   delete f.config.repositoryRouting.localRoot;
   assert.equal(loadConfig(f.save()).repositoryRouting.localRoot, undefined);
+});
+
+const claudeModels = { architect: 'opus', implementer: 'sonnet', reviewer: 'opus' };
+
+test('legacy layout is normalized into runtimes and keeps path keys', t => {
+  const f = fixture(t); f.config.claudePath = '/bin/claude-x';
+  const c = loadConfig(f.save());
+  assert.deepEqual(Object.keys(c.runtimes), ['codex']);
+  assert.equal(c.runtimes.codex.path, 'codex'); assert.equal(c.codexPath, 'codex');
+  assert.equal(c.claudePath, '/bin/claude-x'); assert.equal(c.runtimeExplicit, true);
+  assert.deepEqual(c.runtimePriority, ['claude', 'codex', 'gemini', 'opencode']);
+});
+
+test('runtimes layout overrides legacy keys, validates env and rejects unknown providers or priorities', t => {
+  const f = fixture(t); delete f.config.runtime; delete f.config.models; delete f.config.allowedModels;
+  f.config.runtimes = { claude: { path: '/opt/claude', models: claudeModels, allowedModels: ['opus', 'sonnet'], env: ['MY_KEY'] }, codex: { models: { architect: 'strong', implementer: 'cheap', reviewer: 'strong' }, allowedModels: ['strong', 'cheap'] } };
+  const c = loadConfig(f.save());
+  assert.equal(c.runtimeExplicit, false); assert.equal(c.runtime, undefined);
+  assert.equal(c.runtimes.claude.path, '/opt/claude'); assert.deepEqual(c.runtimes.claude.env, ['MY_KEY']);
+  assert.equal(c.models.claude.precheck, 'sonnet'); assert.deepEqual(c.allowedModels.codex, ['strong', 'cheap']);
+  f.config.runtimes.claude.env = ['SLACK_BOT_TOKEN']; assert.throws(() => loadConfig(f.save()), /environment variable names/);
+  f.config.runtimes.claude.env = ['lower']; assert.throws(() => loadConfig(f.save()), /environment variable names/);
+  f.config.runtimes.claude.env = [];
+  f.config.runtimes.bogus = {}; assert.throws(() => loadConfig(f.save()), /Unknown runtime/); delete f.config.runtimes.bogus;
+  f.config.runtimePriority = ['claude', 'claude']; assert.throws(() => loadConfig(f.save()), /runtimePriority/);
+  f.config.runtimePriority = ['nope']; assert.throws(() => loadConfig(f.save()), /runtimePriority/);
+  f.config.runtimePriority = ['codex']; assert.deepEqual(loadConfig(f.save()).runtimePriority, ['codex', 'claude']);
+  f.config.runtime = 'gemini'; assert.throws(() => loadConfig(f.save()), /models.gemini is required/);
+  f.config.runtime = 'nope'; assert.throws(() => loadConfig(f.save()), /runtime must be one of/);
+});
+
+test('selectDefaultRuntime honors override, explicit runtime, then priority among available providers', async t => {
+  const f = fixture(t); delete f.config.runtime;
+  f.config.runtimes = { claude: { models: claudeModels, allowedModels: ['opus', 'sonnet'] } };
+  const c = loadConfig(f.save());
+  const up = names => async name => names.includes(name);
+  assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['claude', 'codex']) }), 'claude');
+  assert.deepEqual(c.availableRuntimes, ['claude', 'codex']);
+  assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['codex']) }), 'codex');
+  assert.equal(await selectDefaultRuntime(c, { override: 'codex', isAvailable: up(['claude', 'codex']) }), 'codex');
+  await assert.rejects(selectDefaultRuntime(c, { override: 'claude', isAvailable: up(['codex']) }), /not available/);
+  await assert.rejects(selectDefaultRuntime(c, { override: 'gemini', isAvailable: up(['codex']) }), /not configured/);
+  await assert.rejects(selectDefaultRuntime(c, { isAvailable: up([]) }), /No configured provider CLI/);
+  c.runtimeExplicit = true; c.runtime = 'codex';
+  assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['claude', 'codex']) }), 'codex');
+  await assert.rejects(selectDefaultRuntime(c, { isAvailable: up(['claude']) }), /not available/);
+});
+
+test('selectDefaultRuntime falls through the whole priority list when no runtime is chosen', async t => {
+  const f = fixture(t); delete f.config.runtime;
+  const roles = model => ({ precheck: model, architect: model, implementer: model, reviewer: model });
+  f.config.runtimes = { claude: { models: claudeModels, allowedModels: ['opus', 'sonnet'] }, gemini: { models: roles('flash'), allowedModels: ['flash'] }, opencode: { models: roles('a/b'), allowedModels: ['a/b'] } };
+  const c = loadConfig(f.save());
+  const up = names => async name => names.includes(name);
+  assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['gemini', 'opencode']) }), 'gemini');
+  assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['opencode']) }), 'opencode');
+  assert.deepEqual(c.availableRuntimes, ['opencode']);
 });

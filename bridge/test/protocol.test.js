@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { escapeSlack, parseCommand, safeText } from '../src/protocol.js';
+import { providerNames } from '../src/providers/index.js';
 
 const BOT = 'U123ABC';
 
@@ -133,4 +134,11 @@ test('handles simple commands and safely escapes Slack output', () => {
   assert.equal(safeText('\u001b[31mred\u001b[0m\n\tnext\u0001!'), 'red\n\tnext!');
   assert.equal(escapeSlack('&<tag>\u001b[31m'), '&amp;&lt;tag&gt;');
   assert.equal(safeText('abcdef', 4), 'abc…');
+});
+
+test('runtime accepts every registered provider and rejects unknown names', () => {
+  for (const name of providerNames()) assert.equal(parseCommand(`<@U123ABC> run repo=x runtime=${name} -- go`, BOT).runtime, name);
+  assert.throws(() => parseCommand('<@U123ABC> run repo=x runtime=nope -- go', BOT), /runtime must be one of: claude, codex/);
+  assert.equal(parseCommand('<@U123ABC> run repo=x runtime=gemini -- go', BOT, { runtimes: ['gemini'] }).runtime, 'gemini');
+  assert.throws(() => parseCommand('<@U123ABC> run repo=x runtime=codex -- go', BOT, { runtimes: ['gemini'] }), /runtime must be one of: gemini/);
 });

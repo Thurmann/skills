@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Bridge, parsePrecheck, isLogicFile } from '../src/bridge.js';
+import { execFileSync } from 'node:child_process';
+import { Bridge, parsePrecheck, isLogicFile, readonlySnapshot } from '../src/bridge.js';
 import { Store } from '../src/store.js';
 
 function fixture(t, options = {}) {
@@ -13,7 +14,7 @@ function fixture(t, options = {}) {
   t.after(() => store.close());
   const repository = { path: folder, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' };
   const config = { teamId: 'T123', allowedUsers: ['U123', 'U456'], allowedChannels: ['C123'], operators: [], runtime: 'codex', repositories: { app: repository }, stateDir: folder, skillPath: '/fixture/skill', allowNetwork: true, maxRepairRounds: 1, models: { codex: { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] } };
-  const calls = [], posts = [], commands = [], published = []; let publications = 0;
+  const calls = [], posts = [], commands = [], published = [], state = { head: undefined, status: '', untracked: '' }; let publications = 0;
   const runner = { async run(request) {
     calls.push(request);
     if (options.run) return options.run(request, calls);
@@ -22,11 +23,11 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return options.startCommit ?? 'start0\n'; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'ls-files') return state.untracked; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
     async publishPR(c, task, result) { publications++; published.push(result); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
-  return { folder, store, config, calls, posts, commands, published, bridge, publications: () => publications };
+  return { folder, store, config, calls, posts, commands, published, state, bridge, publications: () => publications };
 }
 function event(text = '<@UBOT> run repo=app -- fix the bug', overrides = {}) {
   return { team_id: 'T123', event_id: 'Ev1', event: { type: 'app_mention', user: 'U123', channel: 'C123', ts: '123.1', text, ...overrides } };
@@ -435,6 +436,75 @@ test('cancellation during channel lookup prevents clone and model calls', async 
   assert.equal(f.store.listTasks()[0].status, 'canceled');
   assert.equal(f.store.listTasks()[0].repository, null);
   assert.equal(f.calls.length, 0);
+});
+
+test('a read-only phase that changes files or moves HEAD fails the job', async t => {
+  for (const change of [s => { s.status = '?? stray.txt\0'; }, s => { s.head = 'moved\n'; }]) {
+    let f;
+    f = fixture(t, { run: async request => { if (request.phase === 'precheck') change(f.state); return { text: pre('advanced') }; } });
+    const accepted = await f.bridge.receive(event());
+    await f.bridge.tick();
+    assert.equal(f.store.getTask(accepted.taskId).status, 'failed');
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.publications(), 0);
+    await f.bridge.flushOutbox();
+    assert.ok(f.posts.some(p => /Read-only precheck phase modified the worktree/.test(p.text)));
+  }
+});
+
+test('run rejects a runtime that is not configured or available, and help lists the available ones', async t => {
+  const f = fixture(t);
+  f.config.availableRuntimes = ['codex'];
+  assert.equal((await f.bridge.receive(event('<@UBOT> run repo=app runtime=claude -- fix'))).accepted, true);
+  assert.equal(f.store.listJobs().length, 0);
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /Runtime claude is not configured or its CLI is unavailable/.test(p.text)));
+  await f.bridge.receive({ ...event('<@UBOT> help'), event_id: 'Ev2', event: { ...event('<@UBOT> help').event, ts: '123.5' } });
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /runtime=codex \(default codex; run only\)/.test(p.text)));
+});
+
+test('followup and retry also reject a task runtime that is no longer available', async t => {
+  const f = fixture(t);
+  const accepted = await f.bridge.receive(event());
+  f.config.availableRuntimes = ['claude'];
+  await f.bridge.receive({ ...event('<@UBOT> followup -- more', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  await f.bridge.receive({ ...event('<@UBOT> retry', { thread_ts: '123.1', ts: '123.3' }), event_id: 'Ev3' });
+  assert.equal(f.store.jobsForTask(accepted.taskId).length, 1);
+  await f.bridge.flushOutbox();
+  assert.equal(f.posts.filter(p => /Runtime codex is not configured or its CLI is unavailable/.test(p.text)).length, 2);
+});
+
+test('a read-only phase that rewrites a pre-existing untracked file fails the job', async t => {
+  let f;
+  f = fixture(t, { run: async request => { if (request.phase === 'precheck') fs.writeFileSync(path.join(f.folder, 'notes.txt'), 'after'); return { text: pre('advanced') }; } });
+  f.state.untracked = 'notes.txt\0'; fs.writeFileSync(path.join(f.folder, 'notes.txt'), 'before');
+  const accepted = await f.bridge.receive(event());
+  await f.bridge.tick();
+  assert.equal(f.store.getTask(accepted.taskId).status, 'failed');
+  assert.equal(f.calls.length, 1);
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /Read-only precheck phase modified the worktree/.test(p.text)));
+});
+
+test('readonlySnapshot works on a real repo with nested repos and dangling symlinks, and detects content changes', async t => {
+  const { command } = await import('../src/git.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-snap-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const git = args => command('git', args, { cwd: root });
+  const run = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c' } });
+  run(root, 'init', '-q'); fs.writeFileSync(path.join(root, 'tracked.txt'), 'x'); run(root, 'add', '.'); run(root, 'commit', '-q', '-m', 'init');
+  fs.mkdirSync(path.join(root, 'nested')); run(path.join(root, 'nested'), 'init', '-q');
+  fs.writeFileSync(path.join(root, 'nested', 'f.txt'), 'n'); run(path.join(root, 'nested'), 'add', '.'); run(path.join(root, 'nested'), 'commit', '-q', '-m', 'n');
+  fs.symlinkSync('/definitely/missing/target', path.join(root, 'dangling'));
+  fs.writeFileSync(path.join(root, 'new file\nwith newline.txt'), 'one');
+  fs.writeFileSync(path.join(root, 'plain.txt'), 'one');
+  const first = await readonlySnapshot(git, root);
+  assert.equal(await readonlySnapshot(git, root), first);
+  assert.match(first, /dangling\0link:\/definitely\/missing\/target/);
+  assert.match(first, /nested\/\0dir/);
+  fs.writeFileSync(path.join(root, 'plain.txt'), 'two');
+  assert.notEqual(await readonlySnapshot(git, root), first);
 });
 
 test('channel mode: a plain top-level mention starts a run task with default models', async t => {

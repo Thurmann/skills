@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { parseCommand, escapeSlack } from './protocol.js';
 import { resolveModels } from './config.js';
+import { providerNames } from './providers/index.js';
 import { createRepositoryRouter } from './repository-router.js';
 import { prepareTask, guardCheck, checkExistingPR, publishPR, command } from './git.js';
 
@@ -51,6 +52,20 @@ export function parsePrecheck(text) {
   if (risk_flags.length >= 2) mode = 'advanced';
   return { mode, model_mode: r.mode, reason: typeof r.reason === 'string' && r.reason ? r.reason.slice(0, 500) : 'No reason given.', predicted_files: Number.isInteger(r.predicted_files) && r.predicted_files > 0 ? r.predicted_files : null, predicted_areas: strings(r.predicted_areas), risk_flags, notes, confidence };
 }
+const digestPath = (root, entry) => {
+  try {
+    const file = path.resolve(root, entry), stat = fs.lstatSync(file);
+    if (stat.isSymbolicLink()) return 'link:' + fs.readlinkSync(file);
+    if (stat.isDirectory()) return 'dir';
+    if (stat.isFile()) return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  } catch { /* unreadable entries count as missing */ }
+  return 'missing';
+};
+/** HEAD, porcelain status and a content digest of untracked non-ignored files; ignored files are out of scope. */
+export async function readonlySnapshot(git, root) {
+  const untracked = (await git(['ls-files', '-z', '--others', '--exclude-standard'])).split('\0').filter(Boolean).sort();
+  return [await git(['rev-parse', 'HEAD']), await git(['status', '--porcelain=v1', '-z', '--untracked-files=all']), ...untracked.map(entry => `${entry}\0${digestPath(root, entry)}`)].join('\0');
+}
 export class Bridge {
   constructor(config, store, runner, transport, botUserId, dependencies = {}) {
     this.config = config; this.store = store; this.runner = runner; this.transport = transport; this.botUserId = botUserId;
@@ -89,7 +104,7 @@ export class Bridge {
     const eventId = `${c.teamId}:${body.event_id}`;
     const respond = text => this.store.accept({ eventId, outbox: outbox(destination, text) });
     let parsed;
-    try { parsed = parseCommand(e.text, this.botUserId, { requireRepo: (c.repositoryRouting?.mode || 'aliases') !== 'channel' }); }
+    try { parsed = parseCommand(e.text, this.botUserId, { requireRepo: (c.repositoryRouting?.mode || 'aliases') !== 'channel', runtimes: providerNames() }); }
     catch (error) { return { accepted: respond(safeError(error)) }; }
     if (!parsed) return { accepted: false };
     let task = this.store.getTask(id), previous;
@@ -99,7 +114,7 @@ export class Bridge {
       else if ((c.repositoryRouting?.mode || 'aliases') !== 'channel') return { accepted: respond('In alias mode, start a task with run repo=<alias> | <request>.') };
       else parsed = { command: 'run', models: {}, request: parsed.request };
     }
-    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code <describe the change> (or run [options] | <request>; the repository comes from this channel name).' : '@Fix Code run repo=app | <describe the change>.') + ' In a task thread, a plain mention is a followup. Options need run [options] | <request> or followup [options] | <request> and go before |: mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... Also status, cancel, retry. New independent work needs a new top-level message.') };
+    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code <describe the change> (or run [options] | <request>; the repository comes from this channel name).' : '@Fix Code run repo=app | <describe the change>.') + ' In a task thread, a plain mention is a followup. Options need run [options] | <request> or followup [options] | <request> and go before |: runtime=' + (c.availableRuntimes || [c.runtime]).join('|') + ' (default ' + c.runtime + '; run only), mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... Also status, cancel, retry. New independent work needs a new top-level message.') };
     if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
     if (parsed.command === 'cancel') {
       if (!task) return { accepted: respond('No task is bound to this thread.') };
@@ -123,12 +138,14 @@ export class Bridge {
       const repository = repositoryMode === 'aliases' ? c.repositories[parsed.repo] : null;
       if (repositoryMode === 'aliases' && !repository) return { accepted: respond('Unknown repository alias. Use a repository configured by the bridge operator.') };
       const runtime = parsed.runtime || c.runtime;
+      if (c.availableRuntimes && !c.availableRuntimes.includes(runtime)) return { accepted: respond(`Runtime ${runtime} is not configured or its CLI is unavailable on this host.`) };
       let models;
       try { models = resolveModels(c, runtime, parsed.models); } catch (error) { return { accepted: respond(safeError(error)) }; }
       task = { id, channel: e.channel, threadTs, owner: e.user, repositoryMode, repoAlias: parsed.repo || null, repository: repository ? { ...repository } : null, runtime, models, initialRequest: parsed.request, status: 'queued', created: time(), updated: time() };
     } else {
       if (!task) return { accepted: respond('No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
       if (!['followup', 'retry'].includes(parsed.command)) return { accepted: respond('Unsupported command.') };
+      if (c.availableRuntimes && !c.availableRuntimes.includes(task.runtime)) return { accepted: respond(`Runtime ${task.runtime} is not configured or its CLI is unavailable on this host.`) };
       if (parsed.command === 'retry') {
         if (!terminal.has(task.status) || task.status === 'succeeded') return { accepted: respond('Retry applies only to failed, interrupted, or canceled tasks. Use followup for a correction.') };
         if (this.store.jobsForTask(id).some(job => job.status === 'queued')) return { accepted: respond('This task already has a queued attempt.') };
@@ -167,10 +184,13 @@ export class Bridge {
     task.stage = phase; task.status = 'running'; this.store.saveTask(task);
     job.stage = phase; job.status = 'running'; this.store.saveJob(job);
     this.store.saveOutbox(outbox(task, `Task ${task.id}: ${phase} (${job.models[phase]}).`));
+    const snapshot = () => phase === 'implementer' ? null : readonlySnapshot(args => this.git.command('git', args, { cwd: task.worktree, signal: controller.signal }), task.worktree);
+    const before = await snapshot();
     const result = await this.runner.run({ runtime: task.runtime, phase, model: job.models[phase], cwd: task.worktree, prompt: this.prompt(task, job, phase, extra.plan, extra.implementation, extra.findings), signal: controller.signal, outputDir, gitCommonDir: task.gitCommonDir,
       onPid: async pid => { job.pid = pid; job.pidIdentity = pid ? processIdentity(pid) : null; this.store.saveJob(job); },
       onSession: async sessionId => { job.sessions ??= []; job.sessions.push({ phase, sessionId }); this.store.saveJob(job); }
     });
+    if (before !== await snapshot()) throw new Error(`Read-only ${phase} phase modified the worktree (HEAD moved or files changed); the job was stopped and work is preserved for inspection.`);
     job.usage ??= []; job.usage.push({ phase, model: job.models[phase], usage: result.usage || null }); this.store.saveJob(job);
     await this.git.guardCheck(this.config, task.guardState, controller.signal);
     return result.text;

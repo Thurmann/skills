@@ -1,3 +1,5 @@
+import { providerNames } from './providers/index.js';
+
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 const FORBIDDEN_INPUT_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
 const ANSI = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g;
@@ -19,7 +21,7 @@ function fail(message) {
   throw new Error(message);
 }
 
-function parseModels(options, allowRepo, allowRuntime) {
+function parseModels(options, allowRepo, allowRuntime, runtimes) {
   const parsed = { models: {} };
   const seen = new Set();
   for (const option of options) {
@@ -34,7 +36,7 @@ function parseModels(options, allowRepo, allowRuntime) {
       parsed.repo = value;
     } else if (key === 'runtime') {
       if (!allowRuntime) fail('followup does not accept runtime');
-      if (!['codex', 'claude'].includes(value)) fail('runtime must be codex or claude');
+      if (!runtimes.includes(value)) fail(`runtime must be one of: ${runtimes.join(', ')}`);
       parsed.runtime = value;
     } else if (key === 'mode') {
       if (!['simple', 'medium', 'advanced'].includes(value)) fail('mode must be simple, medium, or advanced');
@@ -93,7 +95,7 @@ export function parseCommand(text, botUserId, options = {}) {
     const first = (delimiter ? rest.slice(0, delimiter.index) : rest).trim().split(/\s+/)[0];
     if (first && !/^[a-z_]+=/.test(first)) return naturalRequest(commandText);
     const { options: argumentsList, request } = requestParts(rest, command);
-    const parsed = parseModels(argumentsList, command === 'run', command === 'run');
+    const parsed = parseModels(argumentsList, command === 'run', command === 'run', options.runtimes || providerNames());
     if (command === 'run' && options.requireRepo !== false && !parsed.repo) fail('run requires repo=<alias>');
     return { command, ...(parsed.repo ? { repo: parsed.repo } : {}), ...(parsed.runtime ? { runtime: parsed.runtime } : {}), ...(parsed.mode ? { mode: parsed.mode } : {}), models: parsed.models, request };
   }

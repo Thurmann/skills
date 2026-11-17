@@ -3,6 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { RunnerError } from './errors.js';
+import { getProvider, providerNames } from './providers/index.js';
+
+export { RunnerError };
 
 const PHASES = new Set(['precheck', 'architect', 'implementer', 'reviewer']);
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -10,14 +14,6 @@ const MAX_FINAL_TEXT_CHARS = 64 * 1024;
 const KILL_GRACE_MS = 750;
 const GROUP_SETTLE_TIMEOUT_MS = 1500;
 const GROUP_POLL_MS = 30;
-
-export class RunnerError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.name = 'RunnerError';
-    this.code = code;
-  }
-}
 
 const COMMON_ENV = [
   'PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE',
@@ -52,17 +48,16 @@ export function createRunner(config = {}) {
     if (signal?.aborted) throw abortError();
 
     const readonly = phase !== 'implementer';
-    const command = runtime === 'claude'
-      ? (config.claudePath || 'claude')
-      : (config.codexPath || 'codex');
-    const args = runtime === 'claude'
-      ? buildClaudeArgs({ phase, model, effort, readonly })
-      : buildCodexArgs({ phase, model, effort, cwd, readonly, gitCommonDir, allowNetwork: config.allowNetwork === true });
+    const provider = getProvider(runtime);
+    const allowNetwork = config.allowNetwork === true;
+    const command = config.runtimes?.[runtime]?.path || config[`${runtime}Path`] || provider.defaultCommand;
+    const args = provider.buildArgs({ phase, model, effort, cwd, readonly, gitCommonDir, allowNetwork, outputDir, skillPath: config.skillPath });
+    await provider.prepare?.({ readonly, allowNetwork, outputDir });
     const timeoutMs = positiveNumber(config.timeoutMs, 30 * 60 * 1000);
     const maxOutputBytes = positiveNumber(config.maxOutputBytes, MAX_OUTPUT_BYTES);
     const maxFinalTextChars = positiveNumber(config.maxFinalTextChars, MAX_FINAL_TEXT_CHARS);
-    const childEnv = buildChildEnv(runtime, config);
-    const fullPrompt = makePrompt({ phase, runtime, prompt, allowNetwork: config.allowNetwork === true });
+    const childEnv = buildChildEnv(provider, config, runtime, { readonly, allowNetwork });
+    const fullPrompt = makePrompt({ phase, provider, prompt, allowNetwork: config.allowNetwork === true });
 
     return runChild({
       command,
@@ -80,6 +75,7 @@ export function createRunner(config = {}) {
       runtime,
       phase,
       model,
+      parser: provider.createParser(),
     });
   };
   // Preserve the callable adapter shape while supporting Bridge's runner.run(...) contract.
@@ -88,7 +84,7 @@ export function createRunner(config = {}) {
 }
 
 function validateRun({ runtime, phase, model, cwd, prompt, signal }) {
-  if (runtime !== 'codex' && runtime !== 'claude') throw new RunnerError('INVALID_RUNTIME', 'runtime must be codex or claude');
+  if (!providerNames().includes(runtime)) throw new RunnerError('INVALID_RUNTIME', `runtime must be one of: ${providerNames().join(', ')}`);
   if (!PHASES.has(phase)) throw new RunnerError('INVALID_PHASE', 'phase must be precheck, architect, implementer, or reviewer');
   if (typeof model !== 'string' || !model.trim()) throw new RunnerError('INVALID_MODEL', 'model is required');
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new RunnerError('INVALID_CWD', 'cwd must be an absolute path');
@@ -96,55 +92,12 @@ function validateRun({ runtime, phase, model, cwd, prompt, signal }) {
   if (signal && typeof signal.addEventListener !== 'function') throw new RunnerError('INVALID_SIGNAL', 'signal must be an AbortSignal');
 }
 
-function buildCodexArgs({ phase, model, effort, cwd, readonly, gitCommonDir, allowNetwork }) {
-  const args = [
-    'exec', '--json', '--cd', cwd, '--model', model,
-    '--sandbox', readonly ? 'read-only' : 'workspace-write',
-    '--ignore-user-config',
-    '-c', 'approval_policy="never"',
-    '-c', 'agents.enabled=true',
-    '-c', 'mcp_servers={}',
-    '-c', `sandbox_workspace_write.network_access=${allowNetwork ? 'true' : 'false'}`,
-  ];
-  if (effort) args.push('-c', `model_reasoning_effort=${tomlString(effort)}`);
-  if (!readonly && gitCommonDir) {
-    if (typeof gitCommonDir !== 'string' || !path.isAbsolute(gitCommonDir)) {
-      throw new RunnerError('INVALID_GIT_COMMON_DIR', 'gitCommonDir must be an absolute path');
-    }
-    args.push('--add-dir', gitCommonDir);
-  }
-  args.push('-');
-  return args;
-}
-
-function buildClaudeArgs({ phase, model, effort, readonly }) {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model];
-  if (effort) args.push('--effort', effort);
-  // These are ordinary Claude Code permission controls, not permission bypass switches.
-  args.push('--permission-mode', readonly ? 'plan' : 'acceptEdits');
-  args.push('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}');
-  args.push('--tools', ...(readonly
-    ? ['Read', 'Glob', 'Grep']
-    : ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'Agent']));
-  args.push('--allowedTools', ...(readonly
-    ? ['Read', 'Glob', 'Grep']
-    : ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'Agent']));
-  return args;
-}
-
-function tomlString(value) {
-  return `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
-}
-
-function buildChildEnv(runtime, config) {
+function buildChildEnv(provider, config, runtime, opts) {
   const env = {};
   for (const name of COMMON_ENV) {
     if (typeof process.env[name] === 'string') env[name] = process.env[name];
   }
-  const providerVars = runtime === 'codex'
-    ? ['CODEX_HOME', 'CODEX_API_KEY', 'OPENAI_API_KEY']
-    : ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
-  for (const name of providerVars) {
+  for (const name of [...provider.envVars, ...(config.runtimes?.[runtime]?.env || [])]) {
     if (typeof process.env[name] === 'string') env[name] = process.env[name];
   }
   // GitHub credentials are opt-in because they grant the child access to a separate service.
@@ -156,13 +109,13 @@ function buildChildEnv(runtime, config) {
     // SSH agent forwarding is useful for repository access and is narrower than copying key files.
     env.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
   }
-  return env;
+  return { ...env, ...provider.extraEnv?.(opts) };
 }
 
-function makePrompt({ phase, runtime, prompt, allowNetwork }) {
-  const tools = phase === 'implementer'
+function makePrompt({ phase, provider, prompt, allowNetwork }) {
+  const tools = provider.promptTools?.[phase === 'implementer' ? 'implementer' : 'readonly'] ?? (phase === 'implementer'
     ? 'Read, Glob, Grep, Edit, Write, Bash, and Agent'
-    : 'Read, Glob, Grep, and Bash for read-only inspection or tests only';
+    : 'Read, Glob, Grep, and Bash for read-only inspection or tests only');
   const policy = [
     `You are the ${phase} agent. Use only these tools: ${tools}.`,
     'Do not inspect or reveal environment variables, credentials, tokens, or unrelated private files.',
@@ -178,7 +131,7 @@ function makePrompt({ phase, runtime, prompt, allowNetwork }) {
 function runChild(options) {
   const {
     command, args, cwd, env, prompt, signal, timeoutMs, maxOutputBytes,
-    maxFinalTextChars, onSession, onPid, outputDir, runtime, phase, model,
+    maxFinalTextChars, onSession, onPid, outputDir, runtime, phase, model, parser,
   } = options;
 
   return new Promise((resolve, reject) => {
@@ -283,32 +236,14 @@ function runChild(options) {
         let event;
         try { event = JSON.parse(line); } catch { throw new RunnerError('INVALID_OUTPUT', `${runtime} runner emitted malformed JSONL`); }
         if (!event || typeof event !== 'object') return;
-        if (runtime === 'codex') {
-          const nextSession = event.thread_id || (event.type === 'thread.started' && event.thread?.id);
-          if (nextSession && nextSession !== sessionId) {
-            sessionId = String(nextSession);
-            if (typeof onSession === 'function') await onSession(sessionId);
-          }
-          if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-            finalText = boundedText(event.item.text, maxFinalTextChars);
-          } else if (event.type === 'turn.completed') {
-            usage = event.usage ?? event;
-          }
-        } else {
-          if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-            sessionId = String(event.session_id);
-            if (typeof onSession === 'function') await onSession(sessionId);
-          }
-          if (event.type === 'result') {
-            if (typeof event.result === 'string') finalText = boundedText(event.result, maxFinalTextChars);
-            usage = event.usage ?? usage;
-            if (event.is_error === true) throw new RunnerError('PROVIDER_ERROR', 'Claude runner reported an error');
-          } else if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
-            const pieces = event.message.content.filter((item) => item?.type === 'text' && typeof item.text === 'string');
-            if (pieces.length) finalText = boundedText(pieces.map((item) => item.text).join('\n'), maxFinalTextChars);
-            usage = event.message.usage ?? usage;
-          }
+        const out = parser.onEvent(event) || {};
+        if (out.sessionId) {
+          sessionId = String(out.sessionId);
+          if (typeof onSession === 'function') await onSession(sessionId);
         }
+        if (typeof out.finalText === 'string') finalText = boundedText(out.finalText, maxFinalTextChars);
+        if (out.usage !== undefined) usage = out.usage;
+        if (out.error) throw new RunnerError('PROVIDER_ERROR', `${runtime} runner reported an error`);
       }).catch((error) => {
         terminate(error instanceof Error ? error : new Error(`${runtime} runner event parse failed`));
       });

@@ -271,3 +271,107 @@ function isPidRunning(pid) {
     return false;
   }
 }
+
+test('Gemini runs headless with a policy file outside the worktree, stdin prompt, and no Slack tokens', async () => {
+  const capture = path.join(testRoot, 'gemini-capture.json');
+  const script = await makeExecutable('gemini-success', `
+    import { readFileSync, writeFileSync } from 'node:fs';
+    let input = '';
+    for await (const chunk of process.stdin) input += chunk;
+    const argv = process.argv.slice(2);
+    writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ argv, env: process.env, input, policy: readFileSync(argv[argv.indexOf('--policy') + 1], 'utf8') }));
+    const out = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
+    out({ type: 'init', session_id: 'gem-session', model: 'gem' });
+    out({ type: 'message', role: 'assistant', content: 'Working', delta: true });
+    out({ type: 'tool_use', tool_name: 'read_file', tool_id: 't1', parameters: {} });
+    out({ type: 'message', role: 'assistant', content: 'All ', delta: true });
+    out({ type: 'message', role: 'assistant', content: 'done.', delta: true });
+    out({ type: 'result', status: 'success', stats: { total_tokens: 9 } });
+  `);
+  const cwd = await makeCwd();
+  const outputDir = await makeCwd('gemini-out');
+  const prior = { SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN, GEMINI_API_KEY: process.env.GEMINI_API_KEY, MY_EXTRA: process.env.MY_EXTRA };
+  process.env.SLACK_BOT_TOKEN = 'slack-secret-value'; process.env.GEMINI_API_KEY = 'gem-key'; process.env.MY_EXTRA = 'extra';
+  const sessions = [];
+  try {
+    const run = createRunner({ skillPath: '/skills/fix-code', runtimes: { gemini: { path: script, env: ['MY_EXTRA'] } }, allowNetwork: false, timeoutMs: 5000 });
+    const result = await run({ runtime: 'gemini', phase: 'reviewer', model: 'gem', effort: 'high', cwd, prompt: 'Review $(touch /tmp/x).', outputDir, onSession: async (id) => sessions.push(id) });
+    const received = JSON.parse(await readFile(capture, 'utf8'));
+    assert.equal(result.text, 'All done.');
+    assert.equal(result.sessionId, 'gem-session');
+    assert.deepEqual(result.usage, { total_tokens: 9 });
+    assert.deepEqual(sessions, ['gem-session']);
+    assert.equal(received.input.endsWith('Review $(touch /tmp/x).'), true);
+    assert.match(received.input, /file reading and search only/);
+    assert.equal(received.argv[received.argv.indexOf('--approval-mode') + 1], 'plan');
+    assert.equal(received.argv.some((a) => /yolo|^-y$/.test(a)), false);
+    assert.match(received.policy, /toolName = "write_file"\ndecision = "deny"/);
+    assert.match(received.policy, /toolName = "web_fetch"\ndecision = "deny"/);
+    assert.equal(received.argv[received.argv.indexOf('--policy') + 1].startsWith(outputDir), true);
+    assert.deepEqual(received.argv[received.argv.indexOf('--include-directories') + 1].split(','), ['/skills/fix-code', outputDir]);
+    assert.equal(received.env.SLACK_BOT_TOKEN, undefined);
+    assert.equal(received.env.GEMINI_API_KEY, 'gem-key');
+    assert.equal(received.env.MY_EXTRA, 'extra');
+    await assert.rejects(run({ runtime: 'gemini', phase: 'reviewer', model: 'gem', cwd, prompt: 'x' }), { code: 'INVALID_OUTPUT_DIR' });
+  } finally {
+    restoreEnv('SLACK_BOT_TOKEN', prior.SLACK_BOT_TOKEN); restoreEnv('GEMINI_API_KEY', prior.GEMINI_API_KEY); restoreEnv('MY_EXTRA', prior.MY_EXTRA);
+  }
+});
+
+test('Gemini result errors reject with PROVIDER_ERROR', async () => {
+  const script = await makeExecutable('gemini-error', `
+    for await (const _chunk of process.stdin) {}
+    process.stdout.write(JSON.stringify({ type: 'message', role: 'assistant', content: 'partial' }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'result', status: 'error', error: { message: 'bad' } }) + '\\n');
+  `);
+  const run = createRunner({ runtimes: { gemini: { path: script } }, timeoutMs: 5000 });
+  await assert.rejects(run({ runtime: 'gemini', phase: 'implementer', model: 'gem', cwd: await makeCwd(), outputDir: await makeCwd('gem-err'), prompt: 'x' }), { code: 'PROVIDER_ERROR' });
+});
+
+test('opencode receives the prompt on stdin with permissions in env and returns the last message text', async () => {
+  const capture = path.join(testRoot, 'opencode-capture.json');
+  const script = await makeExecutable('opencode-success', `
+    import { writeFileSync } from 'node:fs';
+    let input = '';
+    for await (const chunk of process.stdin) input += chunk;
+    writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env, input }));
+    const out = (event) => process.stdout.write(JSON.stringify({ sessionID: 'ses_9', timestamp: 1, ...event }) + '\\n');
+    out({ type: 'text', part: { messageID: 'm1', type: 'text', text: 'First.' } });
+    out({ type: 'text', part: { messageID: 'm2', type: 'text', text: 'Final ' } });
+    out({ type: 'text', part: { messageID: 'm2', type: 'text', text: 'answer.' } });
+    out({ type: 'step_finish', part: { reason: 'stop', cost: 0, tokens: { input: 1, output: 2 } } });
+  `);
+  const cwd = await makeCwd();
+  const prior = { SLACK_APP_TOKEN: process.env.SLACK_APP_TOKEN, XDG_DATA_HOME: process.env.XDG_DATA_HOME };
+  process.env.SLACK_APP_TOKEN = 'slack-app-secret'; process.env.XDG_DATA_HOME = '/data';
+  try {
+    const run = createRunner({ runtimes: { opencode: { path: script } }, allowNetwork: false, timeoutMs: 5000 });
+    const result = await run({ runtime: 'opencode', phase: 'implementer', model: 'anthropic/claude', cwd, prompt: 'Do it.' });
+    const received = JSON.parse(await readFile(capture, 'utf8'));
+    assert.equal(result.text, 'Final answer.');
+    assert.equal(result.sessionId, 'ses_9');
+    assert.deepEqual(result.usage, { tokens: { input: 1, output: 2 }, cost: 0 });
+    assert.deepEqual(received.argv, ['run', '--standalone', '--format', 'json', '--archived', '--model', 'anthropic/claude']);
+    assert.equal(received.input.endsWith('Do it.'), true);
+    assert.equal(received.env.OPENCODE_DISABLE_PROJECT_CONFIG, '1');
+    const rules = JSON.parse(received.env.OPENCODE_CONFIG_CONTENT).permissions;
+    assert.deepEqual(rules[0], { action: '*', resource: '*', effect: 'deny' });
+    assert.ok(rules.some((r) => r.action === 'edit' && r.effect === 'allow'));
+    assert.equal(rules.some((r) => r.action === 'webfetch'), false);
+    assert.equal(received.env.SLACK_APP_TOKEN, undefined);
+    assert.equal(received.env.XDG_DATA_HOME, '/data');
+  } finally {
+    restoreEnv('SLACK_APP_TOKEN', prior.SLACK_APP_TOKEN); restoreEnv('XDG_DATA_HOME', prior.XDG_DATA_HOME);
+  }
+});
+
+test('opencode error events reject with PROVIDER_ERROR and unknown runtimes are rejected', async () => {
+  const script = await makeExecutable('opencode-error', `
+    for await (const _chunk of process.stdin) {}
+    process.stdout.write(JSON.stringify({ type: 'error', sessionID: 's', error: { type: 'x', message: 'y' } }) + '\\n');
+    process.exit(1);
+  `);
+  const run = createRunner({ runtimes: { opencode: { path: script } }, timeoutMs: 5000 });
+  await assert.rejects(run({ runtime: 'opencode', phase: 'reviewer', model: 'm', cwd: await makeCwd(), prompt: 'x' }), { code: 'PROVIDER_ERROR' });
+  await assert.rejects(run({ runtime: 'nope', phase: 'reviewer', model: 'm', cwd: await makeCwd(), prompt: 'x' }), { code: 'INVALID_RUNTIME' });
+});
