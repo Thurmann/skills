@@ -27,11 +27,11 @@ The Git boundaries are preserving history and keeping implementation off existin
 
 ## Precheck and modes
 
-Every task starts with a quick precheck by the cheapest efficient model, which selects one mode. Read [precheck and modes](references/modes.md) at task start and follow the selected mode's rules.
+Every task starts with a quick precheck, which selects one mode. The precheck is inline for named modes, plainly trivial requests, or a cheap caller; otherwise it runs on the cheapest efficient model at low effort. Read [precheck and modes](references/modes.md) at task start and follow the selected mode's rules.
 
 - **Simple** (speed, lowest token use): one agent on the cheapest efficient model does the whole task in one pass. No architect, no reviewer. Examples: change a web element's color, fix a simple logic error, add a small feature.
 - **Medium** (balanced): the coordinator plans briefly and cheap implementer subagents do subtasks. The architect is optional. A reviewer runs only if the actual change is bigger or riskier than the precheck predicted. Examples: a new feature, refactoring several files, a difficult logic change.
-- **Advanced** (correctness): non-negotiable architect plan before edits, cheap implementer subagents for units, and a mandatory independent architect-class review. Examples: whole-repository refactoring, new repositories, very large features.
+- **Advanced** (correctness): non-negotiable architect plan before edits, cheap implementer subagents for units, and a mandatory independent architect-class review. Examples: new repositories or projects, whole-repository refactors, new architecture or data models, multiple high-risk flags.
 
 A human can force a mode with `mode=simple|medium|advanced` or equivalent plain language. Escalate to a higher mode when the triggers in the reference appear; never downgrade without an explicit human instruction. The Git rules above apply in every mode.
 
@@ -42,7 +42,7 @@ Read [model policy](references/model-policy.md) at task start. Resolve these rol
 - **Architect:** the strongest efficient model for overview, design decisions, decomposition, and difficult diagnosis.
 - **Implementer:** the cheapest available model that supports the required coding/tools; it performs most exploration, implementation, tests, and routine fixes.
 - **Reviewer:** a fresh strong/efficient reviewer when the mode requires one; keep review focused on the actual diff and evidence.
-- **Precheck:** the cheapest efficient model at low effort; it only classifies the request.
+- **Precheck:** inline for named modes, plainly trivial requests, or a cheap caller; otherwise the cheapest efficient model at low effort. It only classifies the request.
 
 Use explicit, validated model/effort selections. Delegate to role models where supported; the caller can remain a coordinator. This skill explicitly authorizes bounded role-based delegation for the requested work. Never claim to change the caller's model merely by writing instructions.
 
@@ -50,7 +50,7 @@ A human prompt can override with `model=<id>` for all roles or `architect_model=
 
 ## Execution
 
-0. **Precheck.** Select the mode with the cheap precheck and report it with its reason and scope prediction in one line.
+0. **Precheck.** Select the mode with the precheck (inline or on the cheapest efficient model, per the modes reference) and report it with its reason and scope prediction in one line.
 1. **Frame and inspect.** Identify repository/new-project destination, desired behavior, base, scope, verification evidence, and authorized delivery target. Read applicable repository instructions. Inspect status, remotes, history, available tools/models, and existing PRs. State the finish condition, mode, and model allocation briefly. Ask only for a missing decision that cannot be resolved from context; continue independent preparation.
 2. **Plan for the mode.** Simple: the single agent locates the change and plans in a few lines. Medium: the coordinator writes a short plan with units and checks. Advanced: the architect must produce the plan before any edit; give it concise relevant evidence and an explicit question. For a bug, investigate and reproduce the failure before planning a fix. For features, settle behavior and interfaces. For a new repo, choose a minimal end-to-end architecture and staged deliverables. Read [change-type guidance](references/change-types.md) only for the matching change type.
 3. **Isolate before edits.** Establish the new branch and workspace per the mode's workspace rule (see Non-negotiable Git rules), plus guard state. Every writer must receive its exact worktree, branch, allowed files, finish condition, and Git prohibitions. Keep one writer per branch; parallelize only independent read-only tasks or isolated branches.

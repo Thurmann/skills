@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Bridge, parsePrecheck } from '../src/bridge.js';
+import { Bridge, parsePrecheck, isLogicFile } from '../src/bridge.js';
 import { Store } from '../src/store.js';
 
 function fixture(t, options = {}) {
@@ -33,7 +33,7 @@ function event(text = '<@UBOT> run repo=app -- fix the bug', overrides = {}) {
 }
 
 test('durable intake deduplicates events and executes strong/cheap/strong with original-thread replies', async t => {
-  const f = fixture(t);
+  const f = fixture(t, { run: async request => ({ text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? '{"verdict":"pass","summary":"Verified","findings":[]}' : `${request.phase} evidence` }) });
   const accepted = await f.bridge.receive(event());
   assert.equal(accepted.accepted, true);
   assert.equal((await f.bridge.receive(event())).accepted, false);
@@ -118,7 +118,7 @@ test('failed or contradictory review never publishes', async t => {
 
 test('repair loop is bounded and uses cheap model before a fresh review', async t => {
   let reviews = 0;
-  const f = fixture(t, { run: async request => ({ text: request.phase === 'reviewer' ? JSON.stringify({ verdict: ++reviews === 1 ? 'changes_requested' : 'pass', summary: 'review', findings: reviews === 1 ? ['add regression'] : [] }) : 'evidence' }) });
+  const f = fixture(t, { run: async request => ({ text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? JSON.stringify({ verdict: ++reviews === 1 ? 'changes_requested' : 'pass', summary: 'review', findings: reviews === 1 ? ['add regression'] : [] }) : 'evidence' }) });
   await f.bridge.receive(event()); await f.bridge.tick();
   assert.deepEqual(f.calls.map(c => c.phase), ['precheck', 'architect', 'implementer', 'reviewer', 'implementer', 'reviewer']);
   assert.equal(f.publications(), 1);
@@ -201,11 +201,55 @@ test('published result leads with the outcome even when implementer output is hu
   assert.match(f.published[0].slice(0, 12000), /^Mode: simple\. Independent review: not required/);
 });
 
-test('low-confidence precheck through tick bumps simple to medium', async t => {
+test('low confidence without a risk flag does not bump the mode through tick', async t => {
   const f = fixture(t, { run: modeRun(pre('simple', { confidence: 'low' })) });
   await f.bridge.receive(event()); await f.bridge.tick();
-  assert.equal(f.store.listJobs()[0].mode, 'medium');
-  assert.deepEqual(phases(f), ['precheck', 'implementer', 'reviewer'].slice(0, 2).concat(f.calls.length > 2 ? ['reviewer'] : []));
+  assert.equal(f.store.listJobs()[0].mode, 'simple');
+  assert.deepEqual(phases(f), ['precheck', 'implementer']);
+});
+
+test('low confidence with a risk flag bumps simple past medium rules through tick', async t => {
+  const f = fixture(t, { run: modeRun(pre('medium', { confidence: 'low', risk_flags: ['auth'] })) });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.equal(f.store.listJobs()[0].mode, 'advanced');
+  assert.deepEqual(phases(f), ['precheck', 'architect', 'implementer', 'reviewer']);
+});
+
+test('logic-file count ignores test, doc and lockfile changes for escalation and review', async t => {
+  const names = 'a.js\ntest/a.test.js\nsrc/b.spec.ts\nREADME.md\ndocs/x.png\npackage-lock.json\ntests/helper.js';
+  const f = fixture(t, { run: modeRun(pre('simple')), nameOnly: names });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'implementer']);
+  const g = fixture(t, { run: modeRun(pre('medium', { predicted_files: 2 })), nameOnly: 'a.js\nb.js\n' + names });
+  await g.bridge.receive(event()); await g.bridge.tick();
+  assert.deepEqual(phases(g), ['precheck', 'implementer']);
+});
+
+test('calibration record is saved and written, and the outcome states logic files', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple', { predicted_files: 1 })), nameOnly: 'a.js\nREADME.md' });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  const job = f.store.listJobs()[0];
+  const expected = { model_mode: 'simple', mode_after_precheck: 'simple', final_mode: 'simple', predicted_files: 1, changed_files: 2, changed_logic_files: 1, escalated: false, reviewed: false, review_reason: null };
+  assert.deepEqual(job.calibration, expected);
+  const file = path.join(f.folder, 'artifacts', job.taskId, job.id, 'calibration.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), expected);
+  assert.match(f.published[0], /Predicted\/actual logic files: 1\/1\./);
+  const g = fixture(t);
+  await g.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await g.bridge.tick();
+  assert.equal(g.store.listJobs()[0].calibration.model_mode, null);
+});
+
+test('prompts read skill files per phase', async t => {
+  const f = fixture(t, { run: modeRun(pre('advanced')) });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  const prompt = phase => f.calls.find(c => c.phase === phase).prompt;
+  assert.doesNotMatch(prompt('precheck'), /Use the installed fix-code skill/);
+  assert.doesNotMatch(prompt('precheck'), /SKILL\.md/);
+  assert.match(prompt('architect'), /references\/modes\.md.*references\/change-types\.md/);
+  assert.match(prompt('implementer'), /git-and-pr\.md/);
+  assert.match(prompt('reviewer'), /references\/modes\.md/);
+  for (const phase of ['architect', 'implementer', 'reviewer']) assert.match(prompt(phase), /Do not read model-policy\.md or integrations\.md/);
+  assert.doesNotMatch(prompt('implementer'), /model-policy\.md\)|\/model-policy/);
 });
 
 test('change counting uses the job start commit, not the task base', async t => {
@@ -225,21 +269,45 @@ test('retry keeps the previous explicit mode', async t => {
   assert.equal(f.store.listJobs().at(-1).requestedMode, 'medium');
 });
 
-test('parsePrecheck normalizes unreadable, low-confidence, risky and invalid predictions', () => {
-  assert.equal(parsePrecheck('nope').mode, 'advanced');
-  assert.equal(parsePrecheck(pre('simple', { confidence: 'low' })).mode, 'medium');
-  assert.equal(parsePrecheck(pre('medium', { confidence: 'low' })).mode, 'advanced');
+test('parsePrecheck normalizes unreadable, risky and invalid predictions', () => {
+  const bad = parsePrecheck('nope');
+  assert.equal(bad.mode, 'medium'); assert.equal(bad.predicted_files, null); assert.match(bad.reason, /medium with mandatory review/);
+  assert.equal(parsePrecheck(pre('simple', { confidence: 'low' })).mode, 'simple');
+  assert.equal(parsePrecheck(pre('simple', { confidence: 'bogus' })).confidence, 'medium');
+  assert.equal(parsePrecheck(pre('medium', { confidence: 'low' })).mode, 'medium');
   assert.equal(parsePrecheck(pre('simple', { risk_flags: ['auth'] })).mode, 'medium');
+  assert.equal(parsePrecheck(pre('simple', { confidence: 'low', risk_flags: ['auth'] })).mode, 'medium');
+  assert.equal(parsePrecheck(pre('medium', { confidence: 'low', risk_flags: ['data'] })).mode, 'advanced');
+  assert.equal(parsePrecheck(pre('advanced')).mode, 'advanced');
   assert.equal(parsePrecheck('```json\n' + pre('simple') + '\n```').mode, 'simple');
   assert.equal(parsePrecheck(pre('simple', { predicted_files: 0 })).predicted_files, null);
   assert.equal(parsePrecheck(pre('simple', { predicted_files: 1.5 })).predicted_files, null);
-  assert.equal(parsePrecheck(pre('bogus')).mode, 'advanced');
+  assert.equal(parsePrecheck(pre('bogus')).mode, 'medium');
 });
 
-test('unreadable precheck falls back to advanced in the pipeline', async t => {
+test('two distinct risk categories make advanced; duplicates in one category do not', () => {
+  const two = parsePrecheck(pre('medium', { risk_flags: ['security', 'concurrency'] }));
+  assert.equal(two.mode, 'advanced'); assert.deepEqual(two.risk_flags, ['security', 'concurrency']); assert.equal(two.model_mode, 'medium');
+  const one = parsePrecheck(pre('medium', { risk_flags: ['data', 'migration', 'data migration'] }));
+  assert.equal(one.mode, 'medium'); assert.deepEqual(one.risk_flags, ['data/migration']);
+});
+
+test('non-risk flags move to notes and do not affect the mode', () => {
+  const r = parsePrecheck(pre('simple', { risk_flags: ['public API', 'build/deploy'], notes: 'touches CLI' }));
+  assert.equal(r.mode, 'simple'); assert.deepEqual(r.risk_flags, []); assert.deepEqual(r.notes, ['touches CLI', 'public API', 'build/deploy']);
+  assert.deepEqual(parsePrecheck(pre('simple', { notes: ['a', 'b'] })).notes, ['a', 'b']);
+});
+
+test('isLogicFile excludes tests, docs and lockfiles but keeps source', () => {
+  for (const f of ['test/a.js', 'src/__tests__/a.js', 'a.test.ts', 'a.spec.mjs', 'tests/test_a.py', 'test_a.py', 'a_test.go', 'README.md', 'notes.txt', 'docs/a.html', 'package-lock.json', 'sub/yarn.lock', 'go.sum']) assert.equal(isLogicFile(f), false, f);
+  for (const f of ['src/bridge.js', 'a.py', 'main.go', 'src/contest/a.js', 'Makefile']) assert.equal(isLogicFile(f), true, f);
+});
+
+test('unreadable precheck falls back to medium with review and no architect in the pipeline', async t => {
   const f = fixture(t);
   await f.bridge.receive(event()); await f.bridge.tick();
-  assert.equal(f.store.listJobs()[0].mode, 'advanced');
+  assert.equal(f.store.listJobs()[0].mode, 'medium');
+  assert.deepEqual(phases(f), ['precheck', 'implementer', 'reviewer']);
 });
 
 test('cancellation aborts active run and never publishes', async t => {
