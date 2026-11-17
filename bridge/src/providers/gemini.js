@@ -54,7 +54,7 @@ export default {
         } else if (event.type === 'tool_use') text = '';
         else if (event.type === 'result') {
           if (event.stats != null) out.usage = event.stats;
-          if (event.status === 'error') out.error = true;
+          if (event.status === 'error') out.error = event.error?.message || true;
         }
         return out;
       },

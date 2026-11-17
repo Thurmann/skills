@@ -43,6 +43,9 @@ export default {
           out.finalText = event.item.text;
         } else if (event.type === 'turn.completed') {
           out.usage = event.usage ?? event;
+        } else if (event.type === 'turn.failed' || event.type === 'error') {
+          // Recorded, not fatal: Codex also reports retried stream errors here and exits nonzero itself.
+          out.errorDetail = event.error?.message ?? event.message;
         }
         return out;
       },

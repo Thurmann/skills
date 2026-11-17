@@ -77,7 +77,8 @@ test('gemini parser takes the text after the last tool call, joining deltas, and
   assert.equal(feed({ type: 'message', role: 'assistant', content: 'Replaced.' }).finalText, 'Replaced.');
   assert.deepEqual(feed({ type: 'error', severity: 'error', message: 'non-fatal' }), {});
   assert.deepEqual(feed({ type: 'result', status: 'success', stats: { total_tokens: 5 } }), { usage: { total_tokens: 5 } });
-  assert.equal(feed({ type: 'result', status: 'error', error: { message: 'x' } }).error, true);
+  assert.equal(feed({ type: 'result', status: 'error', error: { message: 'x' } }).error, 'x');
+  assert.equal(feed({ type: 'result', status: 'error' }).error, true);
 });
 
 test('opencode args run standalone with JSON output, a model, and no auto-approve', () => {
@@ -106,7 +107,21 @@ test('opencode parser keeps the last message text built from deltas, plus sessio
   assert.equal(parser.onEvent(text('m2', 'Final ')).finalText, 'Final ');
   assert.equal(parser.onEvent(text('m2', 'answer.')).finalText, 'Final answer.');
   assert.deepEqual(parser.onEvent({ type: 'step_finish', sessionID: 'ses_1', part: { reason: 'stop', cost: 0.01, tokens: { input: 3, output: 4 } } }), { usage: { tokens: { input: 3, output: 4 }, cost: 0.01 } });
-  assert.equal(parser.onEvent({ type: 'error', sessionID: 'ses_1', error: { type: 'x', message: 'y' } }).error, true);
+  assert.equal(parser.onEvent({ type: 'error', sessionID: 'ses_1', error: { type: 'x', message: 'y' } }).error, 'y');
+  assert.equal(parser.onEvent({ type: 'error', sessionID: 'ses_1', error: { name: 'APIError', data: { message: 'quota' } } }).error, 'quota');
+  assert.equal(parser.onEvent({ type: 'error', sessionID: 'ses_1' }).error, true);
+});
+
+test('codex parser records turn failures and error events as non-fatal detail', () => {
+  const parser = getProvider('codex').createParser();
+  assert.deepEqual(parser.onEvent({ type: 'error', message: 'Reconnecting... 1/5' }), { errorDetail: 'Reconnecting... 1/5' });
+  assert.deepEqual(parser.onEvent({ type: 'turn.failed', error: { message: 'You hit your spend cap.' } }), { errorDetail: 'You hit your spend cap.' });
+});
+
+test('claude parser reports the result text of an error result', () => {
+  const parser = getProvider('claude').createParser();
+  assert.equal(parser.onEvent({ type: 'result', is_error: true, result: 'Credit balance is too low' }).error, 'Credit balance is too low');
+  assert.equal(parser.onEvent({ type: 'result', is_error: true }).error, true);
 });
 
 test('provider env allowlists and doctor checks', () => {

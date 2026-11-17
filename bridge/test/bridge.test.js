@@ -458,7 +458,7 @@ test('run rejects a runtime that is not configured or available, and help lists 
   assert.equal((await f.bridge.receive(event('<@UBOT> run repo=app runtime=claude -- fix'))).accepted, true);
   assert.equal(f.store.listJobs().length, 0);
   await f.bridge.flushOutbox();
-  assert.ok(f.posts.some(p => /Runtime claude is not configured or its CLI is unavailable/.test(p.text)));
+  assert.ok(f.posts.some(p => /Runtime claude is not configured: add models\.claude and allowedModels\.claude/.test(p.text)));
   await f.bridge.receive({ ...event('<@UBOT> help'), event_id: 'Ev2', event: { ...event('<@UBOT> help').event, ts: '123.5' } });
   await f.bridge.flushOutbox();
   assert.ok(f.posts.some(p => /runtime=codex \(default codex; run only\)/.test(p.text)));
@@ -472,7 +472,7 @@ test('followup and retry also reject a task runtime that is no longer available'
   await f.bridge.receive({ ...event('<@UBOT> retry', { thread_ts: '123.1', ts: '123.3' }), event_id: 'Ev3' });
   assert.equal(f.store.jobsForTask(accepted.taskId).length, 1);
   await f.bridge.flushOutbox();
-  assert.equal(f.posts.filter(p => /Runtime codex is not configured or its CLI is unavailable/.test(p.text)).length, 2);
+  assert.equal(f.posts.filter(p => /Runtime codex CLI is unavailable on this host/.test(p.text)).length, 2);
 });
 
 test('a read-only phase that rewrites a pre-existing untracked file fails the job', async t => {

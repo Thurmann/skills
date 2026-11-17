@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { RunnerError } from './errors.js';
+import { RunnerError, errorDetail } from './errors.js';
 import { getProvider, providerNames } from './providers/index.js';
 
 export { RunnerError };
@@ -14,9 +14,11 @@ const MAX_FINAL_TEXT_CHARS = 64 * 1024;
 const KILL_GRACE_MS = 750;
 const GROUP_SETTLE_TIMEOUT_MS = 1500;
 const GROUP_POLL_MS = 30;
+const STDERR_TAIL_CHARS = 16 * 1024;
 
+// USER/LOGNAME are needed by CLIs that keep their login in the macOS Keychain (e.g. Claude Code).
 const COMMON_ENV = [
-  'PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE',
   'LC_MESSAGES', 'LC_COLLATE', 'LC_NUMERIC', 'LC_TIME', 'TZ',
   'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE',
   'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
@@ -28,7 +30,8 @@ const COMMON_ENV = [
  * The runner deliberately forwards only a small environment allowlist. In particular, Slack
  * credentials, shell startup variables, loader injection variables, and proxy credentials are
  * never inherited. `outputDir` receives a sanitized result summary only; prompts and raw event
- * streams are intentionally not persisted.
+ * streams are intentionally not persisted. Failures carry a short, redacted detail taken from the
+ * provider's reported error or, failing that, the tail of stderr.
  */
 export function createRunner(config = {}) {
   const run = async function run({
@@ -144,6 +147,8 @@ function runChild(options) {
     let finalText = '';
     let sessionId;
     let usage;
+    let providerError = '';
+    let stderrTail = '';
     let failure;
     let terminationPromise = Promise.resolve();
     let terminationStarted = false;
@@ -175,6 +180,10 @@ function runChild(options) {
       terminationPromise = escalateProcessGroup(child);
     };
     const onAbort = () => terminate(abortError());
+    const withDetail = (message) => {
+      const detail = providerError || errorDetail(stderrTail);
+      return detail ? `${message}: ${detail}` : message;
+    };
 
     try {
       child = spawn(command, args, {
@@ -196,7 +205,7 @@ function runChild(options) {
     child.once('error', (error) => {
       // Spawn errors have no child process to wait for.
       if (child.pid == null) void settle(new RunnerError('SPAWN_FAILED', `Unable to start ${runtime} runner: ${safeSpawnError(error)}`));
-      else terminate(new RunnerError('PROCESS_ERROR', `${runtime} runner process error`));
+      else terminate(new RunnerError('PROCESS_ERROR', withDetail(`${runtime} runner process error`)));
     });
 
     child.stdout.on('data', (chunk) => {
@@ -222,7 +231,8 @@ function runChild(options) {
       if (settled || failure) return;
       totalBytes += chunk.length;
       if (totalBytes > maxOutputBytes) terminate(new RunnerError('OUTPUT_LIMIT', `${runtime} runner exceeded the ${maxOutputBytes} byte output limit`));
-      // Stderr is deliberately discarded to avoid exposing prompts, credentials, or local paths.
+      // Only a bounded tail is kept, and it is redacted before it can reach an error message.
+      stderrTail = (stderrTail + chunk.toString('utf8')).slice(-STDERR_TAIL_CHARS);
     });
     child.stdin.on('error', (error) => {
       if (error?.code === 'EPIPE') return;
@@ -243,7 +253,9 @@ function runChild(options) {
         }
         if (typeof out.finalText === 'string') finalText = boundedText(out.finalText, maxFinalTextChars);
         if (out.usage !== undefined) usage = out.usage;
-        if (out.error) throw new RunnerError('PROVIDER_ERROR', `${runtime} runner reported an error`);
+        if (typeof out.errorDetail === 'string' && out.errorDetail.trim()) providerError = errorDetail(out.errorDetail);
+        if (typeof out.error === 'string' && out.error.trim()) providerError = errorDetail(out.error);
+        if (out.error) throw new RunnerError('PROVIDER_ERROR', withDetail(`${runtime} runner reported an error`));
       }).catch((error) => {
         terminate(error instanceof Error ? error : new Error(`${runtime} runner event parse failed`));
       });
@@ -265,11 +277,11 @@ function runChild(options) {
         }
         if (code !== 0) {
           const status = childSignal ? `signal ${childSignal}` : `exit code ${code}`;
-          await settle(new RunnerError('NONZERO_EXIT', `${runtime} runner failed with ${status}`));
+          await settle(new RunnerError('NONZERO_EXIT', withDetail(`${runtime} runner failed with ${status}`)));
           return;
         }
         if (!finalText) {
-          await settle(new RunnerError('EMPTY_RESPONSE', `${runtime} runner completed without a final text response`));
+          await settle(new RunnerError('EMPTY_RESPONSE', withDetail(`${runtime} runner completed without a final text response`)));
           return;
         }
         const result = { text: finalText, sessionId, usage };

@@ -8,7 +8,7 @@ import { WebClient } from '@slack/web-api';
 import { loadConfig, selectDefaultRuntime, configHome, findConfig, loadEnvBeside } from './config.js';
 import { Store } from './store.js';
 import { createRunner } from './runner.js';
-import { getProvider } from './providers/index.js';
+import { getProvider, providerNames } from './providers/index.js';
 import { Bridge, processIdentity } from './bridge.js';
 import { command, validateRepository } from './git.js';
 
@@ -20,6 +20,15 @@ const safeLogger = {
   getLevel() { return 'error'; }, setLevel() {}
 };
 const available = config => name => command(config.runtimes[name].path, ['--version']).then(() => true, () => false);
+// An installed CLI without models/allowedModels is skipped by config loading; say so instead of staying silent.
+async function unconfiguredInstalled(config) {
+  const found = [];
+  for (const name of providerNames()) {
+    if (!config.runtimes[name] && await command(config[`${name}Path`], ['--version']).then(() => true, () => false)) found.push(name);
+  }
+  return found;
+}
+const unconfiguredWarning = name => `${name} CLI is installed but not configured; add models.${name} and allowedModels.${name} (or runtimes.${name}) to config.json to use it.`;
 async function doctor(config, override) {
   const checks = [];
   const check = async (name, operation, required = true) => {
@@ -35,6 +44,7 @@ async function doctor(config, override) {
     for (const { name, args } of getProvider(runtime).doctorChecks()) await check(`${runtime} ${name}`, () => command(config.runtimes[runtime].path, args).catch(error => { ok = false; throw error; }), false);
     if (ok) usable.push(runtime);
   }
+  for (const name of await unconfiguredInstalled(config)) checks.push({ check: `${name} configuration`, ok: true, warning: unconfiguredWarning(name) });
   if (override) checks.push(usable.includes(override) ? { check: `requested runtime ${override}`, ok: true } : { check: `requested runtime ${override}`, ok: false, reason: `Runtime ${override} is not configured or not usable on this host.` });
   else checks.push(usable.length ? { check: 'at least one provider usable', ok: true, usable } : { check: 'at least one provider usable', ok: false, reason: 'No configured provider CLI is usable on this host.' });
   try { checks.push({ check: `default runtime: ${await selectDefaultRuntime(config, { override, isAvailable: async name => usable.includes(name) })}`, ok: true }); }
@@ -50,6 +60,7 @@ async function start(config, override) {
   if (!/^xoxb-/.test(process.env.SLACK_BOT_TOKEN || '') || !/^xapp-/.test(process.env.SLACK_APP_TOKEN || '')) throw new Error('Set Slack bot/app tokens locally in .env. Never paste them into chat.');
   await selectDefaultRuntime(config, { override, isAvailable: available(config) });
   console.log(`Default runtime: ${config.runtime}; available: ${config.availableRuntimes.join(', ')}`);
+  for (const name of await unconfiguredInstalled(config)) console.warn(`Warning: ${unconfiguredWarning(name)}`);
   mkdirPrivate(config.stateDir);
   let release = () => {};
   let store, socket, bridge, timers = [];
