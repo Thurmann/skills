@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { errorDetail } from './errors.js';
 
 export function commandEnv() {
   const result = {};
@@ -16,7 +17,7 @@ export function command(executable, args, { cwd, signal, timeout = 120000 } = {}
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Command canceled.')); return; }
     const child = spawn(executable, args, { cwd, env: commandEnv(), shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', failure, killTimer, settled = false, termination;
+    let stdout = '', stderr = '', failure, killTimer, settled = false, termination;
     let finishTermination;
     const kill = name => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, name); else child.kill(name); } catch {} };
     const terminate = message => { if (failure || settled) return; failure = message; termination = new Promise(resolve => { finishTermination = resolve; }); kill('SIGTERM'); killTimer = setTimeout(() => { kill('SIGKILL'); setTimeout(finishTermination, 100); }, 750); };
@@ -25,13 +26,16 @@ export function command(executable, args, { cwd, signal, timeout = 120000 } = {}
     const cleanup = () => { settled = true; clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
     signal?.addEventListener('abort', abort, { once: true });
     child.stdout.on('data', chunk => { stdout += chunk; if (stdout.length > 2000000) terminate('Command exceeded its output limit.'); });
-    child.stderr.on('data', () => {}); // Never surface credential/helper stderr in Slack.
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16384); }); // Only a redacted tail reaches Slack.
     child.on('error', error => { cleanup(); reject(new Error(`${path.basename(executable)} could not run (${error.code || 'error'}).`)); });
-    child.on('close', async code => {
+    child.on('close', async (code, exitSignal) => {
       if (termination) await termination;
       cleanup();
       if (failure) reject(new Error(failure));
-      else if (code !== 0) reject(new Error(`${path.basename(executable)} ${args[0]} failed; inspect local authentication, permissions, or command state. No raw stderr was posted.`));
+      else if (code !== 0) {
+        const detail = errorDetail(stderr);
+        reject(new Error(`${path.basename(executable)} ${args[0]} failed with ${exitSignal ? `signal ${exitSignal}` : `exit code ${code}`}${detail ? `: ${detail}` : '; inspect local authentication, permissions, or command state.'}`));
+      }
       else resolve(stdout.trim());
     });
     if (signal?.aborted) abort();

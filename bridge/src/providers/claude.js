@@ -26,7 +26,7 @@ export default {
         if (event.type === 'result') {
           if (typeof event.result === 'string') out.finalText = event.result;
           if (event.usage != null) out.usage = event.usage;
-          if (event.is_error === true) out.error = true;
+          if (event.is_error === true) out.error = typeof event.result === 'string' && event.result ? event.result : true;
         } else if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
           const pieces = event.message.content.filter((item) => item?.type === 'text' && typeof item.text === 'string');
           if (pieces.length) out.finalText = pieces.map((item) => item.text).join('\n');

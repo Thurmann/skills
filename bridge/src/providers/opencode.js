@@ -31,7 +31,7 @@ export default {
           out.finalText = (texts.get(key) ?? '') + part.text;
           texts.set(key, out.finalText);
         } else if (event.type === 'step_finish' && part) out.usage = { tokens: part.tokens, cost: part.cost };
-        else if (event.type === 'error') out.error = true;
+        else if (event.type === 'error') out.error = event.error?.data?.message || event.error?.message || true;
         return out;
       },
     };

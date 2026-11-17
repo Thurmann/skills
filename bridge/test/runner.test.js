@@ -74,6 +74,8 @@ test('Codex receives literal prompt on stdin and returns thread text and usage',
     assert.equal(received.env.SLACK_BOT_TOKEN, undefined);
     assert.equal(received.env.NODE_OPTIONS, undefined);
     assert.equal(received.env.OPENAI_API_KEY, 'model-key');
+    // Keychain-backed CLI logins (Claude Code on macOS) look up credentials by account name.
+    assert.equal(received.env.USER, process.env.USER);
   } finally {
     restoreEnv('SLACK_BOT_TOKEN', prior.SLACK_BOT_TOKEN);
     restoreEnv('NODE_OPTIONS', prior.NODE_OPTIONS);
@@ -147,7 +149,7 @@ test('precheck phase is accepted and gets read-only Claude tools in plan mode', 
   assert.equal(argv.includes('Edit'), false);
 });
 
-test('nonzero exit returns a useful status without exposing stderr', async () => {
+test('nonzero exit includes a redacted stderr tail', async () => {
   const script = await makeExecutable('codex-failure', `
     process.stderr.write('private-provider-detail API_KEY=do-not-leak\\n');
     process.exitCode = 7;
@@ -156,7 +158,33 @@ test('nonzero exit returns a useful status without exposing stderr', async () =>
   const cwd = await makeCwd();
   await assert.rejects(
     createRunner({ codexPath: script })({ runtime: 'codex', phase: 'implementer', model: 'm', cwd, prompt: 'Run.' }),
-    (error) => error.message === 'codex runner failed with exit code 7' && !error.message.includes('do-not-leak'),
+    (error) => error.message === 'codex runner failed with exit code 7: private-provider-detail API_KEY=[redacted]',
+  );
+});
+
+test('codex turn failure message is reported instead of stderr when it exits nonzero', async () => {
+  const script = await makeExecutable('codex-spend-cap', `
+    for await (const _chunk of process.stdin) {}
+    process.stdout.write(${JSON.stringify(codexEvent('thread.started', { thread_id: 't' }))});
+    process.stdout.write(${JSON.stringify(codexEvent('error', { message: 'Reconnecting... 1/5' }))});
+    process.stdout.write(${JSON.stringify(codexEvent('turn.failed', { error: { message: 'You hit your spend cap set by the owner of your workspace.' } }))});
+    process.stderr.write('stderr noise\\n');
+    process.exitCode = 1;
+  `);
+  await assert.rejects(
+    createRunner({ codexPath: script, timeoutMs: 5000 })({ runtime: 'codex', phase: 'precheck', model: 'm', cwd: await makeCwd(), prompt: 'x' }),
+    (error) => error.code === 'NONZERO_EXIT' && error.message === 'codex runner failed with exit code 1: You hit your spend cap set by the owner of your workspace.',
+  );
+});
+
+test('empty response includes stderr detail', async () => {
+  const script = await makeExecutable('codex-empty', `
+    for await (const _chunk of process.stdin) {}
+    process.stderr.write('Error: model "m" is not supported\\n');
+  `);
+  await assert.rejects(
+    createRunner({ codexPath: script, timeoutMs: 5000 })({ runtime: 'codex', phase: 'precheck', model: 'm', cwd: await makeCwd(), prompt: 'x' }),
+    (error) => error.code === 'EMPTY_RESPONSE' && error.message.endsWith(': Error: model "m" is not supported'),
   );
 });
 
@@ -325,7 +353,7 @@ test('Gemini result errors reject with PROVIDER_ERROR', async () => {
     process.stdout.write(JSON.stringify({ type: 'result', status: 'error', error: { message: 'bad' } }) + '\\n');
   `);
   const run = createRunner({ runtimes: { gemini: { path: script } }, timeoutMs: 5000 });
-  await assert.rejects(run({ runtime: 'gemini', phase: 'implementer', model: 'gem', cwd: await makeCwd(), outputDir: await makeCwd('gem-err'), prompt: 'x' }), { code: 'PROVIDER_ERROR' });
+  await assert.rejects(run({ runtime: 'gemini', phase: 'implementer', model: 'gem', cwd: await makeCwd(), outputDir: await makeCwd('gem-err'), prompt: 'x' }), { code: 'PROVIDER_ERROR', message: 'gemini runner reported an error: bad' });
 });
 
 test('opencode receives the prompt on stdin with permissions in env and returns the last message text', async () => {

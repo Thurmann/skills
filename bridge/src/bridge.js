@@ -7,6 +7,7 @@ import { resolveModels } from './config.js';
 import { providerNames } from './providers/index.js';
 import { createRepositoryRouter } from './repository-router.js';
 import { prepareTask, guardCheck, checkExistingPR, publishPR, command } from './git.js';
+import { redactSecrets } from './errors.js';
 
 const time = () => Date.now();
 const terminal = new Set(['succeeded', 'failed', 'interrupted', 'canceled']);
@@ -16,7 +17,12 @@ export function processIdentity(pid) {
   catch { return null; }
 }
 function safeError(error) {
-  return String(error?.message || 'The task failed.').replace(/xox[baprs]-[A-Za-z0-9-]+|xapp-[A-Za-z0-9-]+/g, '[redacted]').slice(0, 1000);
+  return redactSecrets(error?.message || 'The task failed.').slice(0, 1000);
+}
+function runtimeUnavailable(config, runtime) {
+  if (!config.availableRuntimes || config.availableRuntimes.includes(runtime)) return null;
+  if (!config.models?.[runtime] || !config.allowedModels?.[runtime]) return `Runtime ${runtime} is not configured: add models.${runtime} and allowedModels.${runtime} (or runtimes.${runtime}) to the bridge config.json, then restart the bridge.`;
+  return `Runtime ${runtime} CLI is unavailable on this host (\`${config.runtimes?.[runtime]?.path || runtime} --version\` failed when the bridge started).`;
 }
 function outbox(task, text) {
   return { id: randomUUID(), status: 'pending', channel: task.channel, threadTs: task.threadTs, text, attempts: 0, nextAttemptAt: 0, created: time() };
@@ -138,14 +144,16 @@ export class Bridge {
       const repository = repositoryMode === 'aliases' ? c.repositories[parsed.repo] : null;
       if (repositoryMode === 'aliases' && !repository) return { accepted: respond('Unknown repository alias. Use a repository configured by the bridge operator.') };
       const runtime = parsed.runtime || c.runtime;
-      if (c.availableRuntimes && !c.availableRuntimes.includes(runtime)) return { accepted: respond(`Runtime ${runtime} is not configured or its CLI is unavailable on this host.`) };
+      const unavailable = runtimeUnavailable(c, runtime);
+      if (unavailable) return { accepted: respond(unavailable) };
       let models;
       try { models = resolveModels(c, runtime, parsed.models); } catch (error) { return { accepted: respond(safeError(error)) }; }
       task = { id, channel: e.channel, threadTs, owner: e.user, repositoryMode, repoAlias: parsed.repo || null, repository: repository ? { ...repository } : null, runtime, models, initialRequest: parsed.request, status: 'queued', created: time(), updated: time() };
     } else {
       if (!task) return { accepted: respond('No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
       if (!['followup', 'retry'].includes(parsed.command)) return { accepted: respond('Unsupported command.') };
-      if (c.availableRuntimes && !c.availableRuntimes.includes(task.runtime)) return { accepted: respond(`Runtime ${task.runtime} is not configured or its CLI is unavailable on this host.`) };
+      const unavailable = runtimeUnavailable(c, task.runtime);
+      if (unavailable) return { accepted: respond(unavailable) };
       if (parsed.command === 'retry') {
         if (!terminal.has(task.status) || task.status === 'succeeded') return { accepted: respond('Retry applies only to failed, interrupted, or canceled tasks. Use followup for a correction.') };
         if (this.store.jobsForTask(id).some(job => job.status === 'queued')) return { accepted: respond('This task already has a queued attempt.') };
