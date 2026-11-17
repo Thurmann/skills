@@ -111,7 +111,7 @@ test('legacy layout is normalized into runtimes and keeps path keys', t => {
   assert.deepEqual(Object.keys(c.runtimes), ['codex']);
   assert.equal(c.runtimes.codex.path, 'codex'); assert.equal(c.codexPath, 'codex');
   assert.equal(c.claudePath, '/bin/claude-x'); assert.equal(c.runtimeExplicit, true);
-  assert.deepEqual(c.runtimePriority, ['claude', 'codex']);
+  assert.deepEqual(c.runtimePriority, ['claude', 'codex', 'gemini', 'opencode']);
 });
 
 test('runtimes layout overrides legacy keys, validates env and rejects unknown providers or priorities', t => {
@@ -128,7 +128,8 @@ test('runtimes layout overrides legacy keys, validates env and rejects unknown p
   f.config.runtimePriority = ['claude', 'claude']; assert.throws(() => loadConfig(f.save()), /runtimePriority/);
   f.config.runtimePriority = ['nope']; assert.throws(() => loadConfig(f.save()), /runtimePriority/);
   f.config.runtimePriority = ['codex']; assert.deepEqual(loadConfig(f.save()).runtimePriority, ['codex', 'claude']);
-  f.config.runtime = 'gemini'; assert.throws(() => loadConfig(f.save()), /runtime must be one of/);
+  f.config.runtime = 'gemini'; assert.throws(() => loadConfig(f.save()), /models.gemini is required/);
+  f.config.runtime = 'nope'; assert.throws(() => loadConfig(f.save()), /runtime must be one of/);
 });
 
 test('selectDefaultRuntime honors override, explicit runtime, then priority among available providers', async t => {

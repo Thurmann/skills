@@ -57,7 +57,7 @@ export function createRunner(config = {}) {
     const maxOutputBytes = positiveNumber(config.maxOutputBytes, MAX_OUTPUT_BYTES);
     const maxFinalTextChars = positiveNumber(config.maxFinalTextChars, MAX_FINAL_TEXT_CHARS);
     const childEnv = buildChildEnv(provider, config, runtime, { readonly, allowNetwork });
-    const fullPrompt = makePrompt({ phase, runtime, prompt, allowNetwork: config.allowNetwork === true });
+    const fullPrompt = makePrompt({ phase, provider, prompt, allowNetwork: config.allowNetwork === true });
 
     return runChild({
       command,
@@ -92,7 +92,7 @@ function validateRun({ runtime, phase, model, cwd, prompt, signal }) {
   if (signal && typeof signal.addEventListener !== 'function') throw new RunnerError('INVALID_SIGNAL', 'signal must be an AbortSignal');
 }
 
-function buildChildEnv(provider, config, runtime, { readonly, allowNetwork }) {
+function buildChildEnv(provider, config, runtime, opts) {
   const env = {};
   for (const name of COMMON_ENV) {
     if (typeof process.env[name] === 'string') env[name] = process.env[name];
@@ -112,10 +112,10 @@ function buildChildEnv(provider, config, runtime, { readonly, allowNetwork }) {
   return { ...env, ...provider.extraEnv?.(opts) };
 }
 
-function makePrompt({ phase, runtime, prompt, allowNetwork }) {
-  const tools = phase === 'implementer'
+function makePrompt({ phase, provider, prompt, allowNetwork }) {
+  const tools = provider.promptTools?.[phase === 'implementer' ? 'implementer' : 'readonly'] ?? (phase === 'implementer'
     ? 'Read, Glob, Grep, Edit, Write, Bash, and Agent'
-    : 'Read, Glob, Grep, and Bash for read-only inspection or tests only';
+    : 'Read, Glob, Grep, and Bash for read-only inspection or tests only');
   const policy = [
     `You are the ${phase} agent. Use only these tools: ${tools}.`,
     'Do not inspect or reveal environment variables, credentials, tokens, or unrelated private files.',
