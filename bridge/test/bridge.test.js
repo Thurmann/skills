@@ -45,9 +45,10 @@ test('durable intake deduplicates events and executes strong/cheap/strong with o
   assert.equal(f.store.getTask(accepted.taskId).status, 'succeeded');
   assert.match(f.calls[1].prompt, /Do not push or create a PR yourself/);
   await f.bridge.flushOutbox();
-  assert.equal(f.posts.length, 2, 'only an acknowledgement and a final result are posted');
-  assert.match(f.posts[0].text, /^Task \w+ started\. Repository: example\/app\. Provider: codex\./);
-  assert.match(f.posts[1].text, /finished with a draft PR[\s\S]*Precheck: advanced — because Predicted logic files: 2\.[\s\S]*Mode: advanced\./);
+  assert.equal(f.posts.length, 3, 'only queued, acknowledgement and final result replies are posted');
+  assert.equal(f.posts[0].text, `Task ${accepted.taskId} queued. Provider: codex. Repository: example/app. Results will return in this thread.`);
+  assert.match(f.posts[1].text, /^Task \w+ started\. Mode: advanced\. Estimated time: about 20 min\. Status updates follow every 5 min until the result\.$/);
+  assert.match(f.posts[2].text, /finished with a draft PR[\s\S]*Precheck: advanced — because Predicted logic files: 2\.[\s\S]*Mode: advanced\./);
   assert.ok(f.posts.every(p => p.channel === 'C123' && p.thread_ts === '123.1'));
   assert.ok(f.posts.every(p => !p.text.includes('<@')));
 });
@@ -127,7 +128,7 @@ test('repair loop is bounded and uses cheap model before a fresh review', async 
   assert.equal(f.publications(), 1);
 });
 
-const pre = (mode, extra = {}) => JSON.stringify({ mode, reason: 'because', predicted_files: 2, predicted_areas: ['src'], risk_flags: [], confidence: 'high', ...extra });
+const pre = (mode, extra = {}) => JSON.stringify({ mode, reason: 'because', predicted_files: 2, estimated_minutes: 20, predicted_areas: ['src'], risk_flags: [], confidence: 'high', ...extra });
 const modeRun = (precheck, impl = 'done') => async request => ({ text: request.phase === 'precheck' ? precheck : request.phase === 'reviewer' ? '{"verdict":"pass","summary":"ok","findings":[]}' : impl });
 const phases = f => f.calls.map(c => c.phase);
 
@@ -213,8 +214,8 @@ test('a request needing no code change succeeds with the answer and publishes no
   assert.equal(f.store.getTask(accepted.taskId).status, 'succeeded');
   assert.equal(f.store.listJobs()[0].calibration.changed_files, 0);
   const posts = f.store.listOutbox();
-  assert.equal(posts.length, 2);
-  assert.match(posts[1].text, /finished with no code changes; no PR was published\.\nPrecheck: simple — Not a code change\. Predicted logic files: unknown\.\nMode: simple\.\n2 \+ 2 = 4/);
+  assert.equal(posts.length, 3);
+  assert.match(posts[2].text, /finished with no code changes; no PR was published\.\nPrecheck: simple — Not a code change\. Predicted logic files: unknown\.\nMode: simple\.\n2 \+ 2 = 4/);
 });
 
 test('no new commits with uncommitted files still fails at publication', async t => {
@@ -228,8 +229,8 @@ test('failures report the precheck decision in the final message', async t => {
   f.bridge.git.publishPR = async () => { throw new Error('No task commits were created; no PR was published.'); };
   await f.bridge.receive(event()); await f.bridge.tick();
   const posts = f.store.listOutbox();
-  assert.equal(posts.length, 2);
-  assert.match(posts[1].text, /failed\. No task commits[\s\S]*\nPrecheck: advanced — because/);
+  assert.equal(posts.length, 3);
+  assert.match(posts[2].text, /failed\. No task commits[\s\S]*\nPrecheck: advanced — because/);
 });
 
 test('low confidence without a risk flag does not bump the mode through tick', async t => {
@@ -314,6 +315,36 @@ test('parsePrecheck normalizes unreadable, risky and invalid predictions', () =>
   assert.equal(parsePrecheck(pre('simple', { predicted_files: 0 })).predicted_files, null);
   assert.equal(parsePrecheck(pre('simple', { predicted_files: 1.5 })).predicted_files, null);
   assert.equal(parsePrecheck(pre('bogus')).mode, 'medium');
+  assert.equal(parsePrecheck(pre('simple')).estimated_minutes, 20);
+  for (const estimated_minutes of [0, 2.5, '10', 1441]) assert.equal(parsePrecheck(pre('simple', { estimated_minutes })).estimated_minutes, null);
+  assert.equal(bad.estimated_minutes, null);
+});
+
+test('acknowledgement waits for the precheck estimate and status updates repeat until the result', async t => {
+  let release;
+  const implementing = new Promise(resolve => { release = resolve; });
+  const f = fixture(t, { run: async request => { if (request.phase === 'implementer') await implementing; return modeRun(pre('simple', { estimated_minutes: 7 }))(request); } });
+  f.config.statusIntervalMs = 20;
+  await f.bridge.receive(event());
+  assert.equal(f.store.listOutbox().length, 1, 'only the queued reply is posted before the precheck finishes');
+  const running = f.bridge.tick();
+  await new Promise(resolve => setTimeout(resolve, 75));
+  release(); await running;
+  const texts = f.store.listOutbox().map(entry => entry.text).slice(1);
+  assert.match(texts[0], /started\. Mode: simple\. Estimated time: about 7 min\. .*every 1 min/);
+  assert.ok(texts.length >= 4, 'at least two status updates between acknowledgement and result');
+  for (const text of texts.slice(1, -1)) assert.match(text, /still running: implementer \(0 min elapsed; estimated about 7 min\)\./);
+  assert.match(texts.at(-1), /finished with a draft PR/);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(f.store.listOutbox().length, texts.length + 1, 'status updates stop once the task is done');
+});
+
+test('explicit mode skips the estimate in the acknowledgement', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')) });
+  await f.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await f.bridge.tick();
+  const [queuedReply, ack] = f.store.listOutbox().map(entry => entry.text);
+  assert.match(queuedReply, /queued\. Provider: codex\. Repository: example\/app\. Mode: medium \(requested\)\./);
+  assert.match(ack, /started\. Estimated time: unknown \(precheck skipped\)\./);
 });
 
 test('two distinct risk categories make advanced; duplicates in one category do not', () => {
@@ -409,12 +440,12 @@ test('channel lookup happens after durable intake; thread context remains pinned
   assert.equal(lookups, 0);
   assert.equal(f.store.listJobs().length, 1);
   assert.equal(f.store.getTask(accepted.taskId).repository, null);
-  assert.equal(f.store.listOutbox().length, 0, 'acknowledgement waits for the repository to be resolved');
+  assert.match(f.store.listOutbox()[0].text, /^Task \w+ queued\. Provider: codex\. Results will return in this thread\.$/, 'repository is not known yet');
   await f.bridge.tick();
   assert.equal(lookups, 1); assert.equal(prepares, 1);
   assert.equal(f.store.getTask(accepted.taskId).repository.github, 'example/billing-service');
   assert.match(f.calls[0].prompt, /Slack #billing-service → example\/billing-service/);
-  assert.match(f.store.listOutbox()[0].text, /started\. Repository: #billing-service → example\/billing-service\. Provider: codex\./);
+  assert.match(f.store.listOutbox()[1].text, /started\. Repository: #billing-service → example\/billing-service\. Mode: /);
   changedName = true;
   await f.bridge.receive({ ...event('<@UBOT> followup -- also test an empty response', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
   await f.bridge.tick();
