@@ -52,6 +52,20 @@ export function parsePrecheck(text) {
   if (risk_flags.length >= 2) mode = 'advanced';
   return { mode, model_mode: r.mode, reason: typeof r.reason === 'string' && r.reason ? r.reason.slice(0, 500) : 'No reason given.', predicted_files: Number.isInteger(r.predicted_files) && r.predicted_files > 0 ? r.predicted_files : null, predicted_areas: strings(r.predicted_areas), risk_flags, notes, confidence };
 }
+const digestPath = (root, entry) => {
+  try {
+    const file = path.resolve(root, entry), stat = fs.lstatSync(file);
+    if (stat.isSymbolicLink()) return 'link:' + fs.readlinkSync(file);
+    if (stat.isDirectory()) return 'dir';
+    if (stat.isFile()) return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  } catch { /* unreadable entries count as missing */ }
+  return 'missing';
+};
+/** HEAD, porcelain status and a content digest of untracked non-ignored files; ignored files are out of scope. */
+export async function readonlySnapshot(git, root) {
+  const untracked = (await git(['ls-files', '-z', '--others', '--exclude-standard'])).split('\0').filter(Boolean).sort();
+  return [await git(['rev-parse', 'HEAD']), await git(['status', '--porcelain=v1', '-z', '--untracked-files=all']), ...untracked.map(entry => `${entry}\0${digestPath(root, entry)}`)].join('\0');
+}
 export class Bridge {
   constructor(config, store, runner, transport, botUserId, dependencies = {}) {
     this.config = config; this.store = store; this.runner = runner; this.transport = transport; this.botUserId = botUserId;
@@ -165,13 +179,7 @@ export class Bridge {
     task.stage = phase; task.status = 'running'; this.store.saveTask(task);
     job.stage = phase; job.status = 'running'; this.store.saveJob(job);
     this.store.saveOutbox(outbox(task, `Task ${task.id}: ${phase} (${job.models[phase]}).`));
-    const snapshot = async () => {
-      if (phase === 'implementer') return null;
-      const git = (args, input) => this.git.command('git', args, { cwd: task.worktree, signal: controller.signal, ...(input === undefined ? {} : { input }) });
-      const untracked = (await git(['ls-files', '-z', '--others', '--exclude-standard'])).split('\0').filter(Boolean);
-      const digest = untracked.length ? await git(['hash-object', '--stdin-paths'], untracked.join('\n') + '\n') : '';
-      return [await git(['rev-parse', 'HEAD']), await git(['status', '--porcelain=v1', '-z', '--untracked-files=all']), digest].join('\0');
-    };
+    const snapshot = () => phase === 'implementer' ? null : readonlySnapshot(args => this.git.command('git', args, { cwd: task.worktree, signal: controller.signal }), task.worktree);
     const before = await snapshot();
     const result = await this.runner.run({ runtime: task.runtime, phase, model: job.models[phase], cwd: task.worktree, prompt: this.prompt(task, job, phase, extra.plan, extra.implementation, extra.findings), signal: controller.signal, outputDir, gitCommonDir: task.gitCommonDir,
       onPid: async pid => { job.pid = pid; job.pidIdentity = pid ? processIdentity(pid) : null; this.store.saveJob(job); },

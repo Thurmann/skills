@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Bridge, parsePrecheck, isLogicFile } from '../src/bridge.js';
+import { execFileSync } from 'node:child_process';
+import { Bridge, parsePrecheck, isLogicFile, readonlySnapshot } from '../src/bridge.js';
 import { Store } from '../src/store.js';
 
 function fixture(t, options = {}) {
@@ -13,7 +14,7 @@ function fixture(t, options = {}) {
   t.after(() => store.close());
   const repository = { path: folder, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' };
   const config = { teamId: 'T123', allowedUsers: ['U123', 'U456'], allowedChannels: ['C123'], operators: [], runtime: 'codex', repositories: { app: repository }, stateDir: folder, skillPath: '/fixture/skill', allowNetwork: true, maxRepairRounds: 1, models: { codex: { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] } };
-  const calls = [], posts = [], commands = [], published = [], state = { head: undefined, status: '', untracked: '', digest: '' }; let publications = 0;
+  const calls = [], posts = [], commands = [], published = [], state = { head: undefined, status: '', untracked: '' }; let publications = 0;
   const runner = { async run(request) {
     calls.push(request);
     if (options.run) return options.run(request, calls);
@@ -22,7 +23,7 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'ls-files') return state.untracked; if (args[0] === 'hash-object') return state.digest; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'ls-files') return state.untracked; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
     async publishPR(c, task, result) { publications++; published.push(result); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
@@ -476,12 +477,32 @@ test('followup and retry also reject a task runtime that is no longer available'
 
 test('a read-only phase that rewrites a pre-existing untracked file fails the job', async t => {
   let f;
-  f = fixture(t, { run: async request => { if (request.phase === 'precheck') f.state.digest = 'hash-after\n'; return { text: pre('advanced') }; } });
-  f.state.untracked = 'notes.txt\0'; f.state.digest = 'hash-before\n';
+  f = fixture(t, { run: async request => { if (request.phase === 'precheck') fs.writeFileSync(path.join(f.folder, 'notes.txt'), 'after'); return { text: pre('advanced') }; } });
+  f.state.untracked = 'notes.txt\0'; fs.writeFileSync(path.join(f.folder, 'notes.txt'), 'before');
   const accepted = await f.bridge.receive(event());
   await f.bridge.tick();
   assert.equal(f.store.getTask(accepted.taskId).status, 'failed');
   assert.equal(f.calls.length, 1);
   await f.bridge.flushOutbox();
   assert.ok(f.posts.some(p => /Read-only precheck phase modified the worktree/.test(p.text)));
+});
+
+test('readonlySnapshot works on a real repo with nested repos and dangling symlinks, and detects content changes', async t => {
+  const { command } = await import('../src/git.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-snap-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const git = args => command('git', args, { cwd: root });
+  const run = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c' } });
+  run(root, 'init', '-q'); fs.writeFileSync(path.join(root, 'tracked.txt'), 'x'); run(root, 'add', '.'); run(root, 'commit', '-q', '-m', 'init');
+  fs.mkdirSync(path.join(root, 'nested')); run(path.join(root, 'nested'), 'init', '-q');
+  fs.writeFileSync(path.join(root, 'nested', 'f.txt'), 'n'); run(path.join(root, 'nested'), 'add', '.'); run(path.join(root, 'nested'), 'commit', '-q', '-m', 'n');
+  fs.symlinkSync('/definitely/missing/target', path.join(root, 'dangling'));
+  fs.writeFileSync(path.join(root, 'new file\nwith newline.txt'), 'one');
+  fs.writeFileSync(path.join(root, 'plain.txt'), 'one');
+  const first = await readonlySnapshot(git, root);
+  assert.equal(await readonlySnapshot(git, root), first);
+  assert.match(first, /dangling\0link:\/definitely\/missing\/target/);
+  assert.match(first, /nested\/\0dir/);
+  fs.writeFileSync(path.join(root, 'plain.txt'), 'two');
+  assert.notEqual(await readonlySnapshot(git, root), first);
 });
