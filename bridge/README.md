@@ -130,6 +130,14 @@ For example, a mention in `#billing-service` resolves the exact case-insensitive
 
 Older configurations that remain in aliases mode continue to use commands such as `@Fix Code run repo=app | Add CSV export.`
 
+A plain mention without `run` also works. At top level it starts a task with default models and the automatic precheck; in a task's thread it is a followup on that task:
+
+```text
+@Fix Code can you fix this small error: blabla
+```
+
+Plain mentions carry no options, so `key=value` text stays part of the request. Use the `run … |` or `followup … |` form to set options, for example `@Fix Code run mode=simple | Fix the typo.` In alias mode, start with `run repo=<alias> | <request>`.
+
 Override models **before** the separator (`|`):
 
 ```text
