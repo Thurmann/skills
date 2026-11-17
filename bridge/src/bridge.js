@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { parseCommand, escapeSlack } from './protocol.js';
+import { parseCommand, escapeSlack, safeText } from './protocol.js';
 import { resolveModels } from './config.js';
 import { providerNames } from './providers/index.js';
 import { createRepositoryRouter } from './repository-router.js';
@@ -24,8 +24,25 @@ function runtimeUnavailable(config, runtime) {
   if (!config.models?.[runtime] || !config.allowedModels?.[runtime]) return `Runtime ${runtime} is not configured: add models.${runtime} and allowedModels.${runtime} (or runtimes.${runtime}) to the bridge config.json, then restart the bridge.`;
   return `Runtime ${runtime} CLI is unavailable on this host (\`${config.runtimes?.[runtime]?.path || runtime} --version\` failed when the bridge started).`;
 }
-function outbox(task, text) {
-  return { id: randomUUID(), status: 'pending', channel: task.channel, threadTs: task.threadTs, text, attempts: 0, nextAttemptAt: 0, created: time() };
+function outbox(task, text, link) {
+  const entry = { id: randomUUID(), status: 'pending', channel: task.channel, threadTs: task.threadTs, text, attempts: 0, nextAttemptAt: 0, created: time() };
+  return link === undefined ? entry : { ...entry, link };
+}
+const PR_LINK = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/;
+// The body stays plain text (no mrkdwn); only the leading link block is mrkdwn.
+function prBlocks(entry) {
+  const body = safeText(entry.text, 11000);
+  const chunks = [];
+  let current = '';
+  for (const character of body) {
+    if (current.length + character.length > 3000) { chunks.push(current); current = ''; }
+    current += character;
+  }
+  if (current) chunks.push(current);
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: `<${entry.link}|Open pull request>` } },
+    ...chunks.map(text => ({ type: 'section', text: { type: 'plain_text', text, emoji: false } }))
+  ];
 }
 const repositoryContext = task => `${task.channelName ? '#' + task.channelName + ' → ' : ''}${task.repository.github}`;
 const estimate = job => job.precheck?.estimated_minutes ? `about ${job.precheck.estimated_minutes} min` : `unknown (${job.precheck ? 'precheck gave none' : 'precheck skipped'})`;
@@ -330,7 +347,7 @@ export class Bridge {
       task.prUrl = prUrl; task.status = 'succeeded'; task.lastSummary = implementation.slice(0, 12000); task.cancelRequested = false; task.updated = time();
       job.status = 'succeeded'; job.pid = null; job.updated = time(); job.prUrl = prUrl;
       this.store.saveTask(task); this.store.saveJob(job);
-      this.store.saveOutbox(outbox(task, `Task ${task.id} finished with a draft PR: ${prUrl}\nBranch: ${task.branch}\n${precheckSummary(job)}\n${outcome}\n${implementation.slice(0, 6200)}`));
+      this.store.saveOutbox(outbox(task, `Task ${task.id} finished with a draft PR: ${prUrl}\nBranch: ${task.branch}\n${precheckSummary(job)}\n${outcome}\n${implementation.slice(0, 6200)}`, prUrl));
     } catch (error) {
       job.status = controller.signal.aborted ? 'canceled' : 'failed'; job.pid = null; job.error = safeError(error); job.updated = time(); this.store.saveJob(job);
       if (task) {
@@ -346,7 +363,9 @@ export class Bridge {
       for (const entry of this.store.pendingOutbox(time())) {
         entry.status = 'sending'; entry.attempts = (entry.attempts || 0) + 1; this.store.saveOutbox(entry);
         try {
-          const result = await this.transport.post({ channel: entry.channel, thread_ts: entry.threadTs, text: escapeSlack(entry.text).slice(0, 11000), mrkdwn: false, parse: 'none', link_names: false, unfurl_links: false, unfurl_media: false, client_msg_id: entry.id });
+          const payload = { channel: entry.channel, thread_ts: entry.threadTs, text: escapeSlack(entry.text).slice(0, 11000), mrkdwn: false, parse: 'none', link_names: false, unfurl_links: false, unfurl_media: false, client_msg_id: entry.id };
+          if (typeof entry.link === 'string' && PR_LINK.test(entry.link)) payload.blocks = prBlocks(entry);
+          const result = await this.transport.post(payload);
           entry.status = 'sent'; entry.messageTs = result.ts; this.store.saveOutbox(entry);
         } catch (error) {
           const rateLimited = error.code === 'slack_webapi_rate_limited_error';

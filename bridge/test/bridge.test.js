@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Bridge, parsePrecheck, isLogicFile, readonlySnapshot } from '../src/bridge.js';
 import { Store } from '../src/store.js';
+import { safeText } from '../src/protocol.js';
 
 function fixture(t, options = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-bridge-'));
@@ -600,4 +601,44 @@ test('alias mode: a plain top-level mention replies with the alias-mode hint and
   assert.equal(f.store.listJobs().length, 0);
   assert.equal(f.store.listTasks().length, 0);
   assert.match(f.store.listOutbox()[0].text, /In alias mode, start a task with run repo=<alias>/);
+});
+
+const linkRun = implementer => async request => ({ text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? '{"verdict":"pass","summary":"Verified","findings":[]}' : request.phase === 'implementer' && implementer ? implementer : `${request.phase} evidence` });
+
+test('final PR result posts a clickable link block with a plain-text body; other replies have no blocks', async t => {
+  const f = fixture(t, { run: linkRun() });
+  await f.bridge.receive(event()); await f.bridge.tick(); await f.bridge.flushOutbox();
+  assert.equal(f.posts.length, 3);
+  const [queued, acknowledgement, final] = f.posts;
+  assert.equal('blocks' in queued, false);
+  assert.equal('blocks' in acknowledgement, false);
+  const prUrl = 'https://github.com/example/app/pull/1';
+  assert.match(final.text, /finished with a draft PR: https:\/\/github\.com\/example\/app\/pull\/1/);
+  assert.deepEqual(final.blocks[0], { type: 'section', text: { type: 'mrkdwn', text: `<${prUrl}|Open pull request>` } });
+  const body = final.blocks.slice(1);
+  assert.ok(body.length >= 1);
+  assert.ok(body.every(block => block.type === 'section' && block.text.type === 'plain_text' && block.text.emoji === false));
+  const entry = f.store.listOutbox().find(e => e.link === prUrl);
+  assert.equal(body.map(block => block.text.text).join(''), safeText(entry.text, 11000));
+});
+
+test('long final result body is split into plain_text blocks of at most 3000 characters', async t => {
+  const long = 'Detailed line about the change.\n'.repeat(200) + 'tail';
+  const f = fixture(t, { run: linkRun(long) });
+  await f.bridge.receive(event()); await f.bridge.tick(); await f.bridge.flushOutbox();
+  const final = f.posts[2];
+  const body = final.blocks.slice(1);
+  assert.ok(body.length >= 3);
+  assert.ok(body.every(block => block.text.type === 'plain_text' && block.text.text.length <= 3000));
+  const entry = f.store.listOutbox().find(e => e.link === 'https://github.com/example/app/pull/1');
+  assert.equal(body.map(block => block.text.text).join(''), safeText(entry.text, 11000));
+});
+
+test('links that are not GitHub pull request URLs post without blocks', async t => {
+  const f = fixture(t);
+  const links = ['https://gitlab.com/example/app/pull/1', 'https://github.com/example/app/pull/1/files', 'http://github.com/example/app/pull/1', 'https://github.com/example/app/issues/1'];
+  links.forEach((link, i) => f.store.saveOutbox({ id: `link${i}`, status: 'pending', channel: 'C123', threadTs: '123.1', text: 'Done', attempts: 0, nextAttemptAt: 0, created: Date.now() + i, link }));
+  await f.bridge.flushOutbox();
+  assert.equal(f.posts.length, links.length);
+  assert.ok(f.posts.every(post => !('blocks' in post)));
 });

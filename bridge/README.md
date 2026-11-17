@@ -237,6 +237,8 @@ A restart marks in-flight attempts interrupted rather than automatically running
 
 Each run posts a queued reply as soon as the request is accepted (task ID, provider, and the repository and requested mode when already known), an acknowledgement once the precheck has finished that adds only what was learned since (the repository in channel mode, the precheck's mode and its time estimate), a status update every 5 minutes (current phase, elapsed time, estimate) while the task runs, and a final result with the precheck decision, mode, review outcome and the implementer's summary. A run that fails before the precheck completes posts the failure without an acknowledgement. Set `statusIntervalMs` in `config.json` to change the status interval. A run that ends with no commits and a clean worktree (a question, or nothing to change) succeeds with the implementer's answer and publishes no PR.
 
+The final result carries a clickable "Open pull request" link above the message, while the body stays plain text (model output is never sent as mrkdwn).
+
 Slack replies use a persistent outbox and original thread coordinates. Rate limits get bounded retries. A connection failure after a possible send is marked **uncertain** rather than blindly resent; exactly-once external delivery is not claimed.
 
 Inspect local state:
