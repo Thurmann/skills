@@ -13,7 +13,7 @@ function fixture(t, options = {}) {
   t.after(() => store.close());
   const repository = { path: folder, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' };
   const config = { teamId: 'T123', allowedUsers: ['U123', 'U456'], allowedChannels: ['C123'], operators: [], runtime: 'codex', repositories: { app: repository }, stateDir: folder, skillPath: '/fixture/skill', allowNetwork: true, maxRepairRounds: 1, models: { codex: { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] } };
-  const calls = [], posts = [], commands = [], published = []; let publications = 0;
+  const calls = [], posts = [], commands = [], published = [], state = { head: undefined, status: '' }; let publications = 0;
   const runner = { async run(request) {
     calls.push(request);
     if (options.run) return options.run(request, calls);
@@ -22,11 +22,11 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return options.startCommit ?? 'start0\n'; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
     async publishPR(c, task, result) { publications++; published.push(result); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
-  return { folder, store, config, calls, posts, commands, published, bridge, publications: () => publications };
+  return { folder, store, config, calls, posts, commands, published, state, bridge, publications: () => publications };
 }
 function event(text = '<@UBOT> run repo=app -- fix the bug', overrides = {}) {
   return { team_id: 'T123', event_id: 'Ev1', event: { type: 'app_mention', user: 'U123', channel: 'C123', ts: '123.1', text, ...overrides } };
@@ -435,4 +435,30 @@ test('cancellation during channel lookup prevents clone and model calls', async 
   assert.equal(f.store.listTasks()[0].status, 'canceled');
   assert.equal(f.store.listTasks()[0].repository, null);
   assert.equal(f.calls.length, 0);
+});
+
+test('a read-only phase that changes files or moves HEAD fails the job', async t => {
+  for (const change of [s => { s.status = '?? stray.txt\0'; }, s => { s.head = 'moved\n'; }]) {
+    let f;
+    f = fixture(t, { run: async request => { if (request.phase === 'precheck') change(f.state); return { text: pre('advanced') }; } });
+    const accepted = await f.bridge.receive(event());
+    await f.bridge.tick();
+    assert.equal(f.store.getTask(accepted.taskId).status, 'failed');
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.publications(), 0);
+    await f.bridge.flushOutbox();
+    assert.ok(f.posts.some(p => /Read-only precheck phase modified the worktree/.test(p.text)));
+  }
+});
+
+test('run rejects a runtime that is not configured or available, and help lists the available ones', async t => {
+  const f = fixture(t);
+  f.config.availableRuntimes = ['codex'];
+  assert.equal((await f.bridge.receive(event('<@UBOT> run repo=app runtime=claude -- fix'))).accepted, true);
+  assert.equal(f.store.listJobs().length, 0);
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /Runtime claude is not configured or its CLI is unavailable/.test(p.text)));
+  await f.bridge.receive({ ...event('<@UBOT> help'), event_id: 'Ev2', event: { ...event('<@UBOT> help').event, ts: '123.5' } });
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /runtime=codex \(default codex\)/.test(p.text)));
 });

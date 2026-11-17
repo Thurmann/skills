@@ -5,9 +5,10 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
-import { loadConfig } from './config.js';
+import { loadConfig, selectDefaultRuntime } from './config.js';
 import { Store } from './store.js';
 import { createRunner } from './runner.js';
+import { getProvider } from './providers/index.js';
 import { Bridge, processIdentity } from './bridge.js';
 import { command, validateRepository } from './git.js';
 
@@ -18,7 +19,8 @@ const safeLogger = {
   error() { console.error('Slack client error (details suppressed; check connection/app configuration).'); },
   getLevel() { return 'error'; }, setLevel() {}
 };
-async function doctor(config) {
+const available = config => name => command(config.runtimes[name].path, ['--version']).then(() => true, () => false);
+async function doctor(config, override) {
   const checks = [];
   const check = async (name, operation) => {
     try { await operation(); checks.push({ check: name, ok: true }); }
@@ -26,11 +28,10 @@ async function doctor(config) {
   };
   await check('fix-code skill', async () => { if (!fs.existsSync(path.join(config.skillPath, 'SKILL.md'))) throw new Error('Skill missing.'); });
   await check('Python Git helper', () => command(config.pythonPath, [path.join(config.skillPath, 'scripts/git_guard.py'), '--help']));
-  const runtimes = new Set([config.runtime]);
-  for (const runtime of runtimes) {
-    await check(`${runtime} CLI`, () => command(config[`${runtime}Path`], ['--version']));
-    if (runtime === 'codex') await check('Codex login', () => command(config.codexPath, ['login', 'status']));
+  for (const runtime of Object.keys(config.runtimes)) {
+    for (const { name, args } of getProvider(runtime).doctorChecks()) await check(`${runtime} ${name}`, () => command(config.runtimes[runtime].path, args));
   }
+  await check('default runtime selection', async () => { checks.push({ check: `selected runtime: ${await selectDefaultRuntime(config, { override, isAvailable: available(config) })}`, ok: true }); });
   await check('GitHub CLI authentication', () => command(config.ghPath, ['auth', 'status']));
   for (const [alias, repo] of Object.entries(config.repositories)) await check(`repository ${alias}`, () => validateRepository(repo));
   checks.push({ check: 'Slack bot token configured', ok: /^xoxb-/.test(process.env.SLACK_BOT_TOKEN || '') });
@@ -38,8 +39,10 @@ async function doctor(config) {
   console.log(JSON.stringify({ ok: checks.every(c => c.ok), checks, note: 'No Slack messages or model calls were made. Model availability is validated by the runtime when invoked; no fallback is performed.' }, null, 2));
   if (!checks.every(c => c.ok)) process.exitCode = 1;
 }
-async function start(config) {
+async function start(config, override) {
   if (!/^xoxb-/.test(process.env.SLACK_BOT_TOKEN || '') || !/^xapp-/.test(process.env.SLACK_APP_TOKEN || '')) throw new Error('Set Slack bot/app tokens locally in .env. Never paste them into chat.');
+  await selectDefaultRuntime(config, { override, isAvailable: available(config) });
+  console.log(`Default runtime: ${config.runtime}; available: ${config.availableRuntimes.join(', ')}`);
   mkdirPrivate(config.stateDir);
   let release = () => {};
   let store, socket, bridge, timers = [];
@@ -87,8 +90,11 @@ async function main() {
   const configIndex = args.indexOf('--config');
   let filename;
   if (configIndex >= 0) { filename = args[configIndex + 1]; if (!filename) throw new Error('--config needs a path.'); args.splice(configIndex, 2); }
+  const runtimeIndex = args.indexOf('--runtime');
+  let runtimeOverride;
+  if (runtimeIndex >= 0) { runtimeOverride = args[runtimeIndex + 1]; if (!runtimeOverride) throw new Error('--runtime needs a name.'); args.splice(runtimeIndex, 2); }
   if (action === 'help') {
-    console.log('Commands: init | doctor | start | status | outbox [retry <id> --confirmed-not-delivered]\nOptional: --config /path/to/config.json. See README.md for Slack setup.'); return;
+    console.log('Commands: init | doctor | start | status | outbox [retry <id> --confirmed-not-delivered]\nOptional: --config /path/to/config.json; --runtime <name> (start, doctor) overrides the default runtime. See README.md for Slack setup.'); return;
   }
   if (action === 'init') {
     for (const [source, destination] of [['config.example.json', 'config.json'], ['.env.example', '.env']]) {
@@ -100,8 +106,8 @@ async function main() {
     return;
   }
   const config = loadConfig(filename);
-  if (action === 'doctor') return doctor(config);
-  if (action === 'start') return start(config);
+  if (action === 'doctor') return doctor(config, runtimeOverride);
+  if (action === 'start') return start(config, runtimeOverride);
   if (action === 'status' || action === 'outbox') {
     const database = path.join(config.stateDir, 'bridge.sqlite');
     if (!fs.existsSync(database)) { console.log('No local task database yet.'); return; }

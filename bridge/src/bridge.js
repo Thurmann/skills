@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { parseCommand, escapeSlack } from './protocol.js';
 import { resolveModels } from './config.js';
+import { providerNames } from './providers/index.js';
 import { createRepositoryRouter } from './repository-router.js';
 import { prepareTask, guardCheck, checkExistingPR, publishPR, command } from './git.js';
 
@@ -89,12 +90,12 @@ export class Bridge {
     const eventId = `${c.teamId}:${body.event_id}`;
     const respond = text => this.store.accept({ eventId, outbox: outbox(destination, text) });
     let parsed;
-    try { parsed = parseCommand(e.text, this.botUserId, { requireRepo: (c.repositoryRouting?.mode || 'aliases') !== 'channel' }); }
+    try { parsed = parseCommand(e.text, this.botUserId, { requireRepo: (c.repositoryRouting?.mode || 'aliases') !== 'channel', runtimes: providerNames() }); }
     catch (error) { return { accepted: respond(safeError(error)) }; }
     if (!parsed) return { accepted: false };
     let task = this.store.getTask(id), previous;
     if (task && task.owner !== e.user && !c.operators.includes(e.user)) return { accepted: respond('Only this task’s owner or a configured operator can control it.') };
-    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code run -- describe the change (repository comes from this channel name).' : '@Fix Code run repo=app -- describe the change.') + ' In its thread: @Fix Code followup -- details, or status, cancel, retry. Options go before --: mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... New independent work needs a new top-level message.') };
+    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code run -- describe the change (repository comes from this channel name).' : '@Fix Code run repo=app -- describe the change.') + ' In its thread: @Fix Code followup -- details, or status, cancel, retry. Options go before --: runtime=' + (c.availableRuntimes || [c.runtime]).join('|') + ' (default ' + c.runtime + '), mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... New independent work needs a new top-level message.') };
     if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with run -- <request> in channel mode, or run repo=<alias> -- <request> in legacy alias mode.') };
     if (parsed.command === 'cancel') {
       if (!task) return { accepted: respond('No task is bound to this thread.') };
@@ -118,6 +119,7 @@ export class Bridge {
       const repository = repositoryMode === 'aliases' ? c.repositories[parsed.repo] : null;
       if (repositoryMode === 'aliases' && !repository) return { accepted: respond('Unknown repository alias. Use a repository configured by the bridge operator.') };
       const runtime = parsed.runtime || c.runtime;
+      if (c.availableRuntimes && !c.availableRuntimes.includes(runtime)) return { accepted: respond(`Runtime ${runtime} is not configured or its CLI is unavailable on this host.`) };
       let models;
       try { models = resolveModels(c, runtime, parsed.models); } catch (error) { return { accepted: respond(safeError(error)) }; }
       task = { id, channel: e.channel, threadTs, owner: e.user, repositoryMode, repoAlias: parsed.repo || null, repository: repository ? { ...repository } : null, runtime, models, initialRequest: parsed.request, status: 'queued', created: time(), updated: time() };
@@ -162,10 +164,13 @@ export class Bridge {
     task.stage = phase; task.status = 'running'; this.store.saveTask(task);
     job.stage = phase; job.status = 'running'; this.store.saveJob(job);
     this.store.saveOutbox(outbox(task, `Task ${task.id}: ${phase} (${job.models[phase]}).`));
+    const snapshot = async () => phase === 'implementer' ? null : [await this.git.command('git', ['rev-parse', 'HEAD'], { cwd: task.worktree, signal: controller.signal }), await this.git.command('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: task.worktree, signal: controller.signal })].join('\0');
+    const before = await snapshot();
     const result = await this.runner.run({ runtime: task.runtime, phase, model: job.models[phase], cwd: task.worktree, prompt: this.prompt(task, job, phase, extra.plan, extra.implementation, extra.findings), signal: controller.signal, outputDir, gitCommonDir: task.gitCommonDir,
       onPid: async pid => { job.pid = pid; job.pidIdentity = pid ? processIdentity(pid) : null; this.store.saveJob(job); },
       onSession: async sessionId => { job.sessions ??= []; job.sessions.push({ phase, sessionId }); this.store.saveJob(job); }
     });
+    if (before !== await snapshot()) throw new Error(`Read-only ${phase} phase modified the worktree (HEAD moved or files changed); the job was stopped and work is preserved for inspection.`);
     job.usage ??= []; job.usage.push({ phase, model: job.models[phase], usage: result.usage || null }); this.store.saveJob(job);
     await this.git.guardCheck(this.config, task.guardState, controller.signal);
     return result.text;

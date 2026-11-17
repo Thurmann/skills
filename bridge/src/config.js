@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { DEFAULT_PRIORITY, providerNames } from './providers/index.js';
 
 const id = (value, pattern, label) => {
   if (typeof value !== 'string' || !pattern.test(value)) throw new Error(`Invalid ${label}; replace example values in config.json.`);
@@ -26,8 +27,9 @@ export function loadConfig(filename = process.env.FIX_CODE_CONFIG || './config.j
   }
   c.operators ??= [];
   if (!Array.isArray(c.operators) || c.operators.some(v => !c.allowedUsers.includes(v))) throw new Error('operators must be a subset of allowedUsers.');
-  c.runtime ??= 'codex';
-  if (!['codex', 'claude'].includes(c.runtime)) throw new Error('runtime must be codex or claude.');
+  const names = providerNames();
+  c.runtimeExplicit = Boolean(c.runtime);
+  if (c.runtimeExplicit && !names.includes(c.runtime)) throw new Error(`runtime must be one of: ${names.join(', ')}.`);
   c.skillPath = absolute(c.skillPath || './skills/fix-code', directory);
   if (!fs.existsSync(path.join(c.skillPath, 'SKILL.md')) || !fs.existsSync(path.join(c.skillPath, 'scripts/git_guard.py'))) throw new Error('The installed fix-code skill and Git helper are required.');
   c.stateDir = absolute(c.stateDir || './state', directory);
@@ -36,7 +38,7 @@ export function loadConfig(filename = process.env.FIX_CODE_CONFIG || './config.j
   if (!Number.isInteger(c.timeoutMs) || c.timeoutMs < 1000 || c.timeoutMs > 86400000) throw new Error('timeoutMs must be between 1000 and 86400000.');
   if (!Number.isInteger(c.maxRepairRounds) || c.maxRepairRounds < 0 || c.maxRepairRounds > 3) throw new Error('maxRepairRounds must be 0..3.');
   if (typeof c.allowNetwork !== 'boolean') throw new Error('Set allowNetwork explicitly to true or false.');
-  c.codexPath ||= 'codex'; c.claudePath ||= 'claude'; c.pythonPath ||= 'python3'; c.ghPath ||= 'gh';
+  c.pythonPath ||= 'python3'; c.ghPath ||= 'gh';
   const hasAliases = c.repositories && typeof c.repositories === 'object' && !Array.isArray(c.repositories) && Object.keys(c.repositories).length > 0;
   c.repositoryRouting ??= { mode: hasAliases ? 'aliases' : 'channel' };
   if (!c.repositoryRouting || typeof c.repositoryRouting !== 'object' || Array.isArray(c.repositoryRouting)) throw new Error('repositoryRouting must be an object.');
@@ -80,15 +82,34 @@ export function loadConfig(filename = process.env.FIX_CODE_CONFIG || './config.j
   } else {
     c.repositories = {};
   }
-  for (const runtime of ['codex', 'claude']) {
-    const defaults = c.models?.[runtime];
-    if (!defaults) { if (runtime === c.runtime) throw new Error(`models.${runtime} is required.`); continue; }
+  const input = c.runtimes ?? {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('runtimes must be an object.');
+  for (const name of Object.keys(input)) if (!names.includes(name)) throw new Error(`Unknown runtime in runtimes: ${name}; use one of: ${names.join(', ')}.`);
+  c.runtimes = {}; c.models ??= {}; c.allowedModels ??= {};
+  for (const runtime of names) {
+    const entry = input[runtime] ?? {};
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`runtimes.${runtime} must be an object.`);
+    const defaults = entry.models ?? c.models[runtime];
+    if (!defaults) continue;
     defaults.precheck ??= defaults.implementer;
-    const allowed = c.allowedModels?.[runtime];
+    const allowed = entry.allowedModels ?? c.allowedModels[runtime];
     if (!Array.isArray(allowed) || !allowed.length) throw new Error(`allowedModels.${runtime} is required.`);
     allowed.forEach(v => id(v, /^(?!-)[a-zA-Z0-9._:/-]+$/, 'model ID'));
     for (const role of ['precheck', 'architect', 'implementer', 'reviewer']) if (!allowed.includes(defaults[role])) throw new Error(`${runtime}.${role} is not in its model allowlist.`);
+    const env = entry.env ?? [];
+    if (!Array.isArray(env) || env.some(v => typeof v !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(v) || v.startsWith('SLACK_'))) throw new Error(`runtimes.${runtime}.env must list environment variable names (not SLACK_*).`);
+    const bin = entry.path ?? c[`${runtime}Path`] ?? runtime;
+    if (typeof bin !== 'string' || !bin) throw new Error('Configured paths must be nonempty strings.');
+    c.runtimes[runtime] = { path: bin, models: defaults, allowedModels: allowed, env };
+    c.models[runtime] = defaults; c.allowedModels[runtime] = allowed;
   }
+  const configured = Object.keys(c.runtimes);
+  if (!configured.length) throw new Error('Configure at least one runtime under runtimes (or models/allowedModels).');
+  if (c.runtimeExplicit && !c.runtimes[c.runtime]) throw new Error(`models.${c.runtime} is required.`);
+  for (const runtime of names) c[`${runtime}Path`] = c.runtimes[runtime]?.path ?? c[`${runtime}Path`] ?? runtime;
+  c.runtimePriority ??= [...DEFAULT_PRIORITY];
+  if (!Array.isArray(c.runtimePriority) || c.runtimePriority.some(v => !names.includes(v)) || new Set(c.runtimePriority).size !== c.runtimePriority.length) throw new Error(`runtimePriority must be unique names from: ${names.join(', ')}.`);
+  c.runtimePriority.push(...names.filter(v => c.runtimes[v] && !c.runtimePriority.includes(v)));
   c.configPath = configPath;
   return c;
 }
@@ -101,4 +122,19 @@ export function resolveModels(config, runtime, overrides = {}, previous) {
     if (!config.allowedModels[runtime].includes(selected[role])) throw new Error(`Model for ${role} is not allowlisted; update local configuration after validating runtime availability.`);
   }
   return selected;
+}
+/** Pick the default runtime: override > explicit config.runtime > first configured, available provider in priority order. */
+export async function selectDefaultRuntime(config, { override, isAvailable = async () => true } = {}) {
+  const pinned = override || (config.runtimeExplicit ? config.runtime : undefined);
+  const candidates = config.runtimePriority.filter(name => config.runtimes[name]);
+  const available = [];
+  for (const name of candidates) if (await isAvailable(name)) available.push(name);
+  config.availableRuntimes = available;
+  if (pinned) {
+    if (!config.runtimes[pinned]) throw new Error(`Runtime ${pinned} is not configured.`);
+    if (!available.includes(pinned)) throw new Error(`Runtime ${pinned} CLI is not available on this host.`);
+    return config.runtime = pinned;
+  }
+  if (!available.length) throw new Error('No configured provider CLI is available.');
+  return config.runtime = available[0];
 }
