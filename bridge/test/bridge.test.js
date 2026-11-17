@@ -23,7 +23,7 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'ls-files') return state.untracked; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'rev-list') return options.commits ?? '1\n'; if (args[0] === 'ls-files') return state.untracked; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
     async publishPR(c, task, result) { publications++; published.push(result); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
@@ -45,7 +45,9 @@ test('durable intake deduplicates events and executes strong/cheap/strong with o
   assert.equal(f.store.getTask(accepted.taskId).status, 'succeeded');
   assert.match(f.calls[1].prompt, /Do not push or create a PR yourself/);
   await f.bridge.flushOutbox();
-  assert.ok(f.posts.length >= 4);
+  assert.equal(f.posts.length, 2, 'only an acknowledgement and a final result are posted');
+  assert.match(f.posts[0].text, /^Task \w+ started\. Repository: example\/app\. Provider: codex\./);
+  assert.match(f.posts[1].text, /finished with a draft PR[\s\S]*Precheck: advanced — because Predicted logic files: 2\.[\s\S]*Mode: advanced\./);
   assert.ok(f.posts.every(p => p.channel === 'C123' && p.thread_ts === '123.1'));
   assert.ok(f.posts.every(p => !p.text.includes('<@')));
 });
@@ -200,6 +202,34 @@ test('published result leads with the outcome even when implementer output is hu
   await f.bridge.receive(event()); await f.bridge.tick();
   assert.equal(f.published.length, 1);
   assert.match(f.published[0].slice(0, 12000), /^Mode: simple\. Independent review: not required/);
+});
+
+test('a request needing no code change succeeds with the answer and publishes nothing', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple', { reason: 'Not a code change.', predicted_files: null }), '2 + 2 = 4'), commits: '0\n' });
+  const accepted = await f.bridge.receive(event('<@UBOT> run repo=app -- Hva er 2+2'));
+  await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'implementer']);
+  assert.equal(f.publications(), 0);
+  assert.equal(f.store.getTask(accepted.taskId).status, 'succeeded');
+  assert.equal(f.store.listJobs()[0].calibration.changed_files, 0);
+  const posts = f.store.listOutbox();
+  assert.equal(posts.length, 2);
+  assert.match(posts[1].text, /finished with no code changes; no PR was published\.\nPrecheck: simple — Not a code change\. Predicted logic files: unknown\.\nMode: simple\.\n2 \+ 2 = 4/);
+});
+
+test('no new commits with uncommitted files still fails at publication', async t => {
+  const f = fixture(t, { run: async request => { if (request.phase === 'implementer') f.state.status = ' M a.js'; return modeRun(pre('simple'))(request); }, commits: '0\n' });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.equal(f.publications(), 1, 'publishPR is responsible for rejecting the dirty worktree');
+});
+
+test('failures report the precheck decision in the final message', async t => {
+  const f = fixture(t, { run: modeRun(pre('advanced'), 'done') });
+  f.bridge.git.publishPR = async () => { throw new Error('No task commits were created; no PR was published.'); };
+  await f.bridge.receive(event()); await f.bridge.tick();
+  const posts = f.store.listOutbox();
+  assert.equal(posts.length, 2);
+  assert.match(posts[1].text, /failed\. No task commits[\s\S]*\nPrecheck: advanced — because/);
 });
 
 test('low confidence without a risk flag does not bump the mode through tick', async t => {
@@ -379,10 +409,12 @@ test('channel lookup happens after durable intake; thread context remains pinned
   assert.equal(lookups, 0);
   assert.equal(f.store.listJobs().length, 1);
   assert.equal(f.store.getTask(accepted.taskId).repository, null);
+  assert.equal(f.store.listOutbox().length, 0, 'acknowledgement waits for the repository to be resolved');
   await f.bridge.tick();
   assert.equal(lookups, 1); assert.equal(prepares, 1);
   assert.equal(f.store.getTask(accepted.taskId).repository.github, 'example/billing-service');
   assert.match(f.calls[0].prompt, /Slack #billing-service → example\/billing-service/);
+  assert.match(f.store.listOutbox()[0].text, /started\. Repository: #billing-service → example\/billing-service\. Provider: codex\./);
   changedName = true;
   await f.bridge.receive({ ...event('<@UBOT> followup -- also test an empty response', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
   await f.bridge.tick();

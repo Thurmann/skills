@@ -27,6 +27,13 @@ function runtimeUnavailable(config, runtime) {
 function outbox(task, text) {
   return { id: randomUUID(), status: 'pending', channel: task.channel, threadTs: task.threadTs, text, attempts: 0, nextAttemptAt: 0, created: time() };
 }
+const repositoryContext = task => `${task.channelName ? '#' + task.channelName + ' → ' : ''}${task.repository.github}`;
+function acknowledgement(task, job) {
+  return `Task ${task.id} started. Repository: ${repositoryContext(task)}. Provider: ${task.runtime}.${job.requestedMode ? ' Mode: ' + job.requestedMode + ' (requested).' : ''} Results will return in this thread.`;
+}
+function precheckSummary(job) {
+  return job.precheck ? `Precheck: ${job.precheck.mode} — ${job.precheck.reason} Predicted logic files: ${job.precheck.predicted_files ?? 'unknown'}.` : `Precheck skipped: mode ${job.mode} requested explicitly.`;
+}
 function reviewJSON(text) {
   const clean = text.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
   let result;
@@ -167,7 +174,9 @@ export class Bridge {
       task.updated = time();
     }
     const job = { id: randomUUID(), taskId: id, request: parsed.request, requestedMode: parsed.mode || previous?.requestedMode || null, models: { ...task.models }, status: 'queued', created: time(), updated: time() };
-    const accepted = this.store.accept({ eventId, task, job, outbox: outbox(task, `Queued task ${id} (${task.repository?.github || task.repoAlias || 'channel repository pending'}, ${task.runtime}). Mode: ${job.requestedMode ? 'requested ' + job.requestedMode : 'precheck (' + job.models.precheck + ')'}. Precheck: ${job.models.precheck}; architecture: ${job.models.architect}; implementation: ${job.models.implementer}; review: ${job.models.reviewer}. Results will return in this thread.`) });
+    // A new channel-mode task has no repository until tick() resolves it; acknowledge there instead.
+    job.acknowledged = !!task.repository;
+    const accepted = this.store.accept({ eventId, task, job, outbox: job.acknowledged ? outbox(task, acknowledgement(task, job)) : null });
     return { accepted, taskId: id };
   }
   prompt(task, job, phase, plan, implementation, findings) {
@@ -191,7 +200,6 @@ export class Bridge {
   async phase(task, job, phase, extra, controller, outputDir) {
     task.stage = phase; task.status = 'running'; this.store.saveTask(task);
     job.stage = phase; job.status = 'running'; this.store.saveJob(job);
-    this.store.saveOutbox(outbox(task, `Task ${task.id}: ${phase} (${job.models[phase]}).`));
     const snapshot = () => phase === 'implementer' ? null : readonlySnapshot(args => this.git.command('git', args, { cwd: task.worktree, signal: controller.signal }), task.worktree);
     const before = await snapshot();
     const result = await this.runner.run({ runtime: task.runtime, phase, model: job.models[phase], cwd: task.worktree, prompt: this.prompt(task, job, phase, extra.plan, extra.implementation, extra.findings), signal: controller.signal, outputDir, gitCommonDir: task.gitCommonDir,
@@ -221,13 +229,13 @@ export class Bridge {
           // fields so a queued followup's overrides or cancellation cannot be overwritten.
           task = { ...this.store.getTask(task.id), channelName: binding.channelName, repository: binding.repository };
           this.store.saveTask(task);
-          this.store.saveOutbox(outbox(task, `Repository context: #${task.channelName} → ${task.repository.github}. This thread is now pinned to that repository.`));
         }
         await this.repositoryRouter.prepare(task, controller.signal);
         controller.signal.throwIfAborted();
       } else if (JSON.stringify(this.config.repositories[task.repoAlias]) !== JSON.stringify(task.repository)) {
         throw new Error('Repository configuration changed for this task; reconcile locally before retrying.');
       }
+      if (!job.acknowledged) { job.acknowledged = true; this.store.saveJob(job); this.store.saveOutbox(outbox(task, acknowledgement(task, job))); }
       const prepared = await this.git.prepareTask(this.config, task, controller.signal);
       controller.signal.throwIfAborted();
       task = { ...this.store.getTask(task.id), worktree: prepared.worktree, branch: prepared.branch, guardState: prepared.guardState, gitCommonDir: prepared.gitCommonDir, baseCommit: prepared.baseCommit };
@@ -244,11 +252,24 @@ export class Bridge {
         fs.writeFileSync(path.join(outputDir, 'precheck.json'), JSON.stringify(precheck, null, 2), { mode: 0o600 });
       }
       job.mode = mode; job.precheck = precheck; this.store.saveJob(job); task.mode = mode; this.store.saveTask(task);
-      this.store.saveOutbox(outbox(task, `Task ${task.id}: Mode: ${mode} — ${precheck ? precheck.reason : 'requested explicitly; precheck skipped'}. Predicted logic files: ${precheck?.predicted_files ?? 'unknown'}.`));
       let plan = '';
       if (mode === 'advanced') { plan = await this.phase(task, job, 'architect', {}, controller, outputDir); fs.writeFileSync(path.join(outputDir, 'plan.txt'), plan, { mode: 0o600 }); }
       let implementation = await this.phase(task, job, 'implementer', { plan, findings: [] }, controller, outputDir);
       fs.writeFileSync(path.join(outputDir, 'implementation-0.txt'), implementation, { mode: 0o600 });
+      // A request that needs no code change (a question, already fixed, cannot reproduce) is a valid
+      // outcome: report the implementer's answer instead of failing at publication.
+      const commits = Number(await this.git.command('git', ['rev-list', '--count', `${job.startCommit}..HEAD`], { cwd: task.worktree, signal: controller.signal }));
+      const dirty = await this.git.command('git', ['status', '--porcelain'], { cwd: task.worktree, signal: controller.signal });
+      if (commits === 0 && !dirty) {
+        if (controller.signal.aborted) throw new Error('Task canceled.');
+        job.calibration = { model_mode: precheck?.model_mode ?? null, mode_after_precheck: precheck?.mode ?? null, final_mode: mode, predicted_files: precheck?.predicted_files ?? null, changed_files: 0, changed_logic_files: 0, escalated: false, reviewed: false, review_reason: null };
+        fs.writeFileSync(path.join(outputDir, 'calibration.json'), JSON.stringify(job.calibration, null, 2), { mode: 0o600 });
+        task.status = 'succeeded'; task.lastSummary = implementation.slice(0, 12000); task.cancelRequested = false; task.updated = time();
+        job.status = 'succeeded'; job.pid = null; job.updated = time();
+        this.store.saveTask(task); this.store.saveJob(job);
+        this.store.saveOutbox(outbox(task, `Task ${task.id} finished with no code changes; no PR was published.\n${precheckSummary(job)}\nMode: ${mode}.\n${implementation.slice(0, 6200)}`));
+        return;
+      }
       const files = (await this.git.command('git', ['diff', '--name-only', `${job.startCommit}..HEAD`, '--'], { cwd: task.worktree, signal: controller.signal })).split('\n').filter(Boolean);
       const changedTotal = files.length, changed = files.filter(isLogicFile).length;
       const exceeded = /^SCOPE_EXCEEDED:/m.test(implementation);
@@ -256,7 +277,6 @@ export class Bridge {
       if (mode === 'simple' && (changed > 3 || exceeded)) {
         escalated = true; mode = 'medium'; job.mode = mode; task.mode = mode;
         job.escalation = { from: 'simple', to: 'medium', changedFiles: changedTotal, changedLogicFiles: changed, scopeExceeded: exceeded }; this.store.saveJob(job); this.store.saveTask(task);
-        this.store.saveOutbox(outbox(task, `Task ${task.id}: escalated from simple to medium (${changed} logic files changed${exceeded ? '; implementer reported SCOPE_EXCEEDED' : ''}).`));
       }
       const predicted = precheck?.predicted_files ?? null;
       let reviewReason = null, skipReason = 'simple mode';
@@ -289,7 +309,8 @@ export class Bridge {
       }
       job.calibration = { model_mode: precheck?.model_mode ?? null, mode_after_precheck: precheck?.mode ?? null, final_mode: mode, predicted_files: predicted, changed_files: changedTotal, changed_logic_files: changed, escalated, reviewed: !!reviewReason, review_reason: reviewReason };
       this.store.saveJob(job); fs.writeFileSync(path.join(outputDir, 'calibration.json'), JSON.stringify(job.calibration, null, 2), { mode: 0o600 });
-      const outcome = `Mode: ${mode}. Independent review: ${reviewReason ? 'passed' : `not required (${skipReason})`}. Predicted/actual logic files: ${predicted ?? 'unknown'}/${changed}.`;
+      const escalation = escalated ? ` (escalated from simple: ${changed} logic files changed${exceeded ? '; implementer reported SCOPE_EXCEEDED' : ''})` : '';
+      const outcome = `Mode: ${mode}${escalation}. Independent review: ${reviewReason ? 'passed' : `not required (${skipReason})`}. Predicted/actual logic files: ${predicted ?? 'unknown'}/${changed}.`;
       if (controller.signal.aborted) throw new Error('Task canceled.');
       job.status = 'publishing'; job.stage = 'publishing'; this.store.saveJob(job);
       task.stage = 'publishing'; this.store.saveTask(task);
@@ -297,12 +318,12 @@ export class Bridge {
       task.prUrl = prUrl; task.status = 'succeeded'; task.lastSummary = implementation.slice(0, 12000); task.cancelRequested = false; task.updated = time();
       job.status = 'succeeded'; job.pid = null; job.updated = time(); job.prUrl = prUrl;
       this.store.saveTask(task); this.store.saveJob(job);
-      this.store.saveOutbox(outbox(task, `Task ${task.id} finished with a draft PR: ${prUrl}\nBranch: ${task.branch}\n${outcome}\n${implementation.slice(0, 6200)}`));
+      this.store.saveOutbox(outbox(task, `Task ${task.id} finished with a draft PR: ${prUrl}\nBranch: ${task.branch}\n${precheckSummary(job)}\n${outcome}\n${implementation.slice(0, 6200)}`));
     } catch (error) {
       job.status = controller.signal.aborted ? 'canceled' : 'failed'; job.pid = null; job.error = safeError(error); job.updated = time(); this.store.saveJob(job);
       if (task) {
         task.status = job.status; task.cancelRequested = false; task.updated = time(); this.store.saveTask(task);
-        this.store.saveOutbox(outbox(task, `Task ${task.id}: ${job.status}. ${job.error}\nBranch/evidence are preserved. Check the actual PR state before retrying if publication had started. Mention status or retry in this thread.`));
+        this.store.saveOutbox(outbox(task, `Task ${task.id}: ${job.status}. ${job.error}\n${job.mode ? precheckSummary(job) + '\n' : ''}Branch/evidence are preserved. Check the actual PR state before retrying if publication had started. Mention status or retry in this thread.`));
       }
     } finally { this.active = null; this.working = false; }
   }
