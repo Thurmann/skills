@@ -77,9 +77,11 @@ test('plain mentions without a command keyword are natural requests', () => {
   assert.deepEqual(parseCommand('<@U123ABC> status now', BOT), {
     command: 'request', models: {}, request: 'status now',
   });
-  assert.deepEqual(parseCommand('<@U123ABC> followup repo=x', BOT), {
-    command: 'request', models: {}, request: 'followup repo=x',
+  assert.deepEqual(parseCommand('<@U123ABC> run the linter -- quickly', BOT), {
+    command: 'request', models: {}, request: 'run the linter -- quickly',
   });
+  assert.throws(() => parseCommand('<@U123ABC> followup repo=x', BOT), /requires \|/);
+  for (const command of ['run', 'followup']) assert.throws(() => parseCommand(`<@U123ABC> ${command}`, BOT), /requires \|/);
   assert.deepEqual(parseCommand('<@U123ABC> please use mode=simple and model=x', BOT), {
     command: 'request', models: {}, request: 'please use mode=simple and model=x',
   });
@@ -109,13 +111,13 @@ test('keeps later separator-like text inside the request verbatim', () => {
 });
 
 test('does not treat dashes inside words or a colon as the separator', () => {
-  assert.deepEqual(parseCommand('<@U123ABC> run repo=demo foo\u2014bar', BOT), { command: 'request', models: {}, request: 'run repo=demo foo\u2014bar' });
-  assert.deepEqual(parseCommand('<@U123ABC> run repo=demo mode=simple: fix', BOT), { command: 'request', models: {}, request: 'run repo=demo mode=simple: fix' });
+  assert.throws(() => parseCommand('<@U123ABC> run repo=demo foo\u2014bar', BOT), /requires \|/);
+  assert.throws(() => parseCommand('<@U123ABC> run repo=demo mode=simple: fix', BOT), /requires \|/);
   assert.throws(() => parseCommand('<@U123ABC> run repo=demo mode=simple | ', BOT), /cannot be empty/);
 });
 
 test('rejects missing, empty, and oversized requests', () => {
-  assert.deepEqual(parseCommand('<@U123ABC> run repo=x', BOT), { command: 'request', models: {}, request: 'run repo=x' });
+  assert.throws(() => parseCommand('<@U123ABC> run repo=x', BOT), /requires \|/);
   assert.throws(() => parseCommand('<@U123ABC> followup repo=x | ', BOT), /cannot be empty/);
   assert.throws(() => parseCommand('<@U123ABC> run repo=x --   ', BOT), /cannot be empty/);
   assert.throws(() => parseCommand(`<@U123ABC> run repo=x -- ${'x'.repeat(16001)}`, BOT), /16000/);

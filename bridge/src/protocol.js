@@ -87,7 +87,11 @@ export function parseCommand(text, botUserId, options = {}) {
   const rest = firstSpace < 0 ? '' : commandText.slice(firstSpace).trimStart();
 
   if (command === 'run' || command === 'followup') {
-    if (!SEPARATOR.test(rest)) return naturalRequest(commandText);
+    if (!rest) fail(`${command} requires | followed by a request`);
+    // Structured only when the text before the separator starts with an option (or is empty).
+    const delimiter = SEPARATOR.exec(rest);
+    const first = (delimiter ? rest.slice(0, delimiter.index) : rest).trim().split(/\s+/)[0];
+    if (first && !/^[a-z_]+=/.test(first)) return naturalRequest(commandText);
     const { options: argumentsList, request } = requestParts(rest, command);
     const parsed = parseModels(argumentsList, command === 'run', command === 'run');
     if (command === 'run' && options.requireRepo !== false && !parsed.repo) fail('run requires repo=<alias>');

@@ -136,7 +136,7 @@ A plain mention without `run` also works. At top level it starts a task with def
 @Fix Code can you fix this small error: blabla
 ```
 
-Plain mentions carry no options, so `key=value` text stays part of the request. Use the `run … |` or `followup … |` form to set options, for example `@Fix Code run mode=simple | Fix the typo.` In alias mode, start with `run repo=<alias> | <request>`.
+Plain mentions carry no options, so `key=value` text stays part of the request. Use the `run … |` or `followup … |` form to set options, for example `@Fix Code run mode=simple | Fix the typo.` Text after `run`/`followup` is read as options only when its first word looks like `key=value` (or it starts with the separator); otherwise the whole message, such as `run the linter and fix warnings`, is a plain request. Bare `status`, `cancel`, `retry` and `help` remain commands. In alias mode, start with `run repo=<alias> | <request>`.
 
 Override models **before** the separator (`|`):
 
