@@ -70,6 +70,7 @@ import fs from 'node:fs';
 const args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(args)+'\\n');
 if(args[0]==='pr'&&args[1]==='list') console.log(fs.existsSync(${JSON.stringify(ghState)})?fs.readFileSync(${JSON.stringify(ghState)},'utf8'):'[]');
 else if(args[0]==='pr'&&args[1]==='create') { const value=k=>args[args.indexOf(k)+1]; const pr=[{number:1,url:'https://github.com/example/app/pull/1',state:'OPEN',isDraft:true,baseRefName:value('--base'),headRefName:value('--head')}];fs.writeFileSync(${JSON.stringify(ghState)},JSON.stringify(pr));console.log(pr[0].url); }
+else if(args[0]==='pr'&&args[1]==='comment') { const file=args[args.indexOf('--body-file')+1]; fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(['body',fs.readFileSync(file,'utf8')])+'\\n'); console.log('ok'); }
 else process.exitCode=1;
 `, { mode: 0o700 });
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
@@ -86,7 +87,7 @@ const result=spawnSync('/usr/bin/git',args,{stdio:'inherit'});process.exit(resul
   let task = { id: 'fixture', repository: { path: repo, github: 'example/app', remote: 'origin', base: 'main', baseBranch: 'main' }, initialRequest: 'Fix fixture bug' };
   task = await prepareTask(config, task);
   assert.notEqual(task.worktree, repo);
-  assert.equal(task.worktree, path.join(config.worktreesRoot, path.basename(repo), 'fix-code-fixture'));
+  assert.equal(fs.realpathSync(task.worktree), fs.realpathSync(path.join(config.worktreesRoot, path.basename(repo), 'fix-code-fixture')));
   fs.writeFileSync(path.join(task.worktree, 'app.txt'), 'after\n'); git(task.worktree, 'add', 'app.txt'); git(task.worktree, 'commit', '-m', 'Fixture fix');
   await guardCheck(config, task.guardState);
   assert.equal(git(repo, 'rev-parse', 'main'), mainBefore);
@@ -99,6 +100,10 @@ const result=spawnSync('/usr/bin/git',args,{stdio:'inherit'});process.exit(resul
   assert.equal(first, second);
   const calls = fs.readFileSync(ghLog, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(calls.filter(a => a[1] === 'create').length, 1);
+  const comments = calls.filter(a => a[0] === 'pr' && a[1] === 'comment');
+  assert.equal(comments.length, 1); // posted on reuse only, not on creation
+  assert.ok(comments[0].includes('--body-file') && comments[0].includes('--repo'));
+  assert.ok(calls.some(a => a[0] === 'body' && a[1].includes('Followup verified.')));
   assert.ok(calls.find(a => a[1] === 'create').includes('--draft'));
   const pushes = fs.readFileSync(gitLog, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(pushes.length, 2);

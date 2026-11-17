@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
-const PHASES = new Set(['architect', 'implementer', 'reviewer']);
+const PHASES = new Set(['precheck', 'architect', 'implementer', 'reviewer']);
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_FINAL_TEXT_CHARS = 64 * 1024;
 const KILL_GRACE_MS = 750;
@@ -89,7 +89,7 @@ export function createRunner(config = {}) {
 
 function validateRun({ runtime, phase, model, cwd, prompt, signal }) {
   if (runtime !== 'codex' && runtime !== 'claude') throw new RunnerError('INVALID_RUNTIME', 'runtime must be codex or claude');
-  if (!PHASES.has(phase)) throw new RunnerError('INVALID_PHASE', 'phase must be architect, implementer, or reviewer');
+  if (!PHASES.has(phase)) throw new RunnerError('INVALID_PHASE', 'phase must be precheck, architect, implementer, or reviewer');
   if (typeof model !== 'string' || !model.trim()) throw new RunnerError('INVALID_MODEL', 'model is required');
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new RunnerError('INVALID_CWD', 'cwd must be an absolute path');
   if (typeof prompt !== 'string') throw new RunnerError('INVALID_PROMPT', 'prompt must be a string');

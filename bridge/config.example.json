@@ -25,11 +25,13 @@
   "maxRepairRounds": 2,
   "models": {
     "codex": {
+      "precheck": "gpt-6-luna",
       "architect": "gpt-6.1-sol",
       "implementer": "gpt-6-luna",
       "reviewer": "gpt-6.1-sol"
     },
     "claude": {
+      "precheck": "haiku",
       "architect": "opus",
       "implementer": "haiku",
       "reviewer": "opus"

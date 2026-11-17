@@ -21,7 +21,7 @@ function parseModels(options, allowRepo, allowRuntime) {
   const parsed = { models: {} };
   const seen = new Set();
   for (const option of options) {
-    const match = /^(repo|runtime|model|architect_model|implementer_model|reviewer_model)=(.*)$/.exec(option);
+    const match = /^(repo|runtime|mode|model|precheck_model|architect_model|implementer_model|reviewer_model)=(.*)$/.exec(option);
     if (!match) fail(`Unknown argument: ${option}`);
     const [, key, value] = match;
     if (seen.has(key)) fail(`Duplicate option: ${key}`);
@@ -34,11 +34,14 @@ function parseModels(options, allowRepo, allowRuntime) {
       if (!allowRuntime) fail('followup does not accept runtime');
       if (!['codex', 'claude'].includes(value)) fail('runtime must be codex or claude');
       parsed.runtime = value;
+    } else if (key === 'mode') {
+      if (!['simple', 'medium', 'advanced'].includes(value)) fail('mode must be simple, medium, or advanced');
+      parsed.mode = value;
     } else {
       if (!value || /^-/.test(value) || /\s|[\u0000-\u001f\u007f-\u009f]/.test(value)) {
         fail(`${key} must be a non-empty id without whitespace or control characters`);
       }
-      parsed.models[{ model: 'all', architect_model: 'architect', implementer_model: 'implementer', reviewer_model: 'reviewer' }[key]] = value;
+      parsed.models[{ model: 'all', precheck_model: 'precheck', architect_model: 'architect', implementer_model: 'implementer', reviewer_model: 'reviewer' }[key]] = value;
     }
   }
   return parsed;
@@ -79,7 +82,7 @@ export function parseCommand(text, botUserId, options = {}) {
     const { options: argumentsList, request } = requestParts(rest, command);
     const parsed = parseModels(argumentsList, command === 'run', command === 'run');
     if (command === 'run' && options.requireRepo !== false && !parsed.repo) fail('run requires repo=<alias>');
-    return { command, ...(parsed.repo ? { repo: parsed.repo } : {}), ...(parsed.runtime ? { runtime: parsed.runtime } : {}), models: parsed.models, request };
+    return { command, ...(parsed.repo ? { repo: parsed.repo } : {}), ...(parsed.runtime ? { runtime: parsed.runtime } : {}), ...(parsed.mode ? { mode: parsed.mode } : {}), models: parsed.models, request };
   }
   if (!['status', 'cancel', 'retry', 'help'].includes(command)) fail(`Unknown command: ${command}`);
   if (rest) fail(`${command} does not accept arguments`);
