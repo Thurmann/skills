@@ -44,6 +44,10 @@ test('gemini args use plan mode and a policy file for read-only, auto_edit and s
   const impl = gemini.buildArgs({ model: 'gem', readonly: false, outputDir });
   assert.equal(impl[impl.indexOf('--approval-mode') + 1], 'auto_edit');
   assert.equal(impl.includes('--skip-trust'), true);
+  for (const readonly of [true, false]) {
+    const args = gemini.buildArgs({ model: 'gem', readonly, outputDir, skillPath: '/skills/fix-code' });
+    assert.deepEqual(args[args.indexOf('--include-directories') + 1].split(','), ['/skills/fix-code', outputDir]);
+  }
   assert.throws(() => gemini.buildArgs({ model: 'gem', readonly: true }), { code: 'INVALID_OUTPUT_DIR' });
   assert.throws(() => gemini.buildArgs({ model: 'gem', readonly: true, outputDir: 'relative' }), { code: 'INVALID_OUTPUT_DIR' });
   await gemini.prepare({ readonly: true, allowNetwork: false, outputDir });

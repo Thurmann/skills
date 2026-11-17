@@ -106,15 +106,15 @@ Keep `stateDir` private and outside the configured source repositories. It conta
 | --- | --- | --- | --- |
 | `claude` | `--permission-mode plan`, tools limited to Read/Glob/Grep | `acceptEdits` with an explicit tool allowlist | Network policy is an instruction only. |
 | `codex` | `--sandbox read-only` | `workspace-write` sandbox plus the Git common dir | Honors `allowNetwork` in the sandbox. |
-| `gemini` | `--approval-mode plan` plus a policy file denying `write_file`, `replace` and `run_shell_command` | `--approval-mode auto_edit` plus a policy allowing those tools, and `--skip-trust` | No effort flag (`effort` is ignored). Web tools are denied by policy when `allowNetwork` is false. The policy file is written into the task's private artifact directory, outside the worktree. |
-| `opencode` | `OPENCODE_CONFIG_CONTENT` permission rules deny everything except read/glob/grep | Rules also allow edit, shell, subagent and skill | Runs `opencode run --standalone --format json`, so this run's environment and config apply only to it. No effort flag. Web tools are allowed only when `allowNetwork` is true. |
+| `gemini` | `--approval-mode plan` plus a policy file denying `write_file`, `replace` and `run_shell_command` | `--approval-mode auto_edit` plus a policy allowing those tools, and `--skip-trust` | No effort flag (`effort` is ignored). Web tools are denied by policy when `allowNetwork` is false, but the implementer's shell can still reach the network, so this only blocks Gemini's built-in web tools. Skill and evidence directories are added with `--include-directories`. The policy file is written into the task's private artifact directory, outside the worktree. |
+| `opencode` | `OPENCODE_CONFIG_CONTENT` permission rules deny everything except read/glob/grep | Rules also allow edit, shell, subagent and skill | Runs `opencode run --standalone --format json`, so this run's environment and config apply only to it. No effort flag. Web tools are allowed only when `allowNetwork` is true, but the implementer's shell can still reach the network, so `allowNetwork: false` only blocks opencode's built-in web tools. |
 
 Caveats:
 
 - Gemini's `--skip-trust` is folder trust, not an approval bypass. Without it, an untrusted folder forces `default` approval mode and the headless implementer could not edit or commit. The task worktree's project `.gemini/` settings are therefore honored, the same exposure as Claude's project settings.
 - opencode rejects every permission request that is not pre-allowed (the bridge never passes `--auto`). Project config and Claude Code compatibility files are disabled via environment variables. Its permissions allow `external_directory` because the skill files and evidence live outside the worktree. Provider API keys are user-chosen variables: list their names under `runtimes.opencode.env`.
 - No runtime is ever launched with yolo, `--auto`, `--dangerously-skip-permissions` or other approval-bypass flags; tests assert this.
-- As defense in depth, the bridge itself checks `HEAD` and `git status` around every non-implementer phase and fails the job, preserving the worktree, if a read-only phase changed anything, whatever the provider.
+- As defense in depth, the bridge itself checks `HEAD` and `git status` around every non-implementer phase and fails the job, preserving the worktree, if a read-only phase changed anything, whatever the provider. The snapshot includes a content digest of untracked, non-ignored files; ignored files are out of scope.
 
 Configuration, with the `runtimes` layout:
 
@@ -139,7 +139,7 @@ npm start
 node src/cli.js start --runtime gemini   # optional: override the default runtime for this run
 ```
 
-`doctor` checks local tools/authentication (every configured provider CLI, so delete providers you do not use from `runtimes`) and reports which default runtime would be selected, the skill/helper, repository routing, and presence of token-shaped values. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
+`doctor` checks local tools/authentication (every configured provider CLI, so delete providers you do not use from `runtimes`) and reports which default runtime would be selected. A missing CLI for a provider that is not the selected runtime is reported as `unavailable` but does not fail the check; the selected runtime (and its login check, for Codex) must pass, the skill/helper, repository routing, and presence of token-shaped values. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
 
 Leave the terminal open and keep the host awake/online. To keep a plugged-in Mac available for a supervised session, you can run the start command under `caffeinate`:
 

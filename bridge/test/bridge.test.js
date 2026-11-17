@@ -13,7 +13,7 @@ function fixture(t, options = {}) {
   t.after(() => store.close());
   const repository = { path: folder, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' };
   const config = { teamId: 'T123', allowedUsers: ['U123', 'U456'], allowedChannels: ['C123'], operators: [], runtime: 'codex', repositories: { app: repository }, stateDir: folder, skillPath: '/fixture/skill', allowNetwork: true, maxRepairRounds: 1, models: { codex: { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] } };
-  const calls = [], posts = [], commands = [], published = [], state = { head: undefined, status: '' }; let publications = 0;
+  const calls = [], posts = [], commands = [], published = [], state = { head: undefined, status: '', untracked: '', digest: '' }; let publications = 0;
   const runner = { async run(request) {
     calls.push(request);
     if (options.run) return options.run(request, calls);
@@ -22,7 +22,7 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'ls-files') return state.untracked; if (args[0] === 'hash-object') return state.digest; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
     async publishPR(c, task, result) { publications++; published.push(result); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
@@ -461,4 +461,27 @@ test('run rejects a runtime that is not configured or available, and help lists 
   await f.bridge.receive({ ...event('<@UBOT> help'), event_id: 'Ev2', event: { ...event('<@UBOT> help').event, ts: '123.5' } });
   await f.bridge.flushOutbox();
   assert.ok(f.posts.some(p => /runtime=codex \(default codex\)/.test(p.text)));
+});
+
+test('followup and retry also reject a task runtime that is no longer available', async t => {
+  const f = fixture(t);
+  const accepted = await f.bridge.receive(event());
+  f.config.availableRuntimes = ['claude'];
+  await f.bridge.receive({ ...event('<@UBOT> followup -- more', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  await f.bridge.receive({ ...event('<@UBOT> retry', { thread_ts: '123.1', ts: '123.3' }), event_id: 'Ev3' });
+  assert.equal(f.store.jobsForTask(accepted.taskId).length, 1);
+  await f.bridge.flushOutbox();
+  assert.equal(f.posts.filter(p => /Runtime codex is not configured or its CLI is unavailable/.test(p.text)).length, 2);
+});
+
+test('a read-only phase that rewrites a pre-existing untracked file fails the job', async t => {
+  let f;
+  f = fixture(t, { run: async request => { if (request.phase === 'precheck') f.state.digest = 'hash-after\n'; return { text: pre('advanced') }; } });
+  f.state.untracked = 'notes.txt\0'; f.state.digest = 'hash-before\n';
+  const accepted = await f.bridge.receive(event());
+  await f.bridge.tick();
+  assert.equal(f.store.getTask(accepted.taskId).status, 'failed');
+  assert.equal(f.calls.length, 1);
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /Read-only precheck phase modified the worktree/.test(p.text)));
 });

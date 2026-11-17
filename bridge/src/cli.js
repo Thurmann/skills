@@ -22,16 +22,19 @@ const safeLogger = {
 const available = config => name => command(config.runtimes[name].path, ['--version']).then(() => true, () => false);
 async function doctor(config, override) {
   const checks = [];
-  const check = async (name, operation) => {
+  const check = async (name, operation, required = true) => {
     try { await operation(); checks.push({ check: name, ok: true }); }
-    catch (error) { checks.push({ check: name, ok: false, reason: error.message }); }
+    catch (error) { checks.push(required ? { check: name, ok: false, reason: error.message } : { check: name, ok: true, unavailable: error.message }); }
   };
   await check('fix-code skill', async () => { if (!fs.existsSync(path.join(config.skillPath, 'SKILL.md'))) throw new Error('Skill missing.'); });
   await check('Python Git helper', () => command(config.pythonPath, [path.join(config.skillPath, 'scripts/git_guard.py'), '--help']));
+  let selected;
+  await check('default runtime selection', async () => { selected = await selectDefaultRuntime(config, { override, isAvailable: available(config) }); checks.push({ check: `selected runtime: ${selected}`, ok: true }); });
+  const pinned = override || (config.runtimeExplicit ? config.runtime : undefined);
   for (const runtime of Object.keys(config.runtimes)) {
-    for (const { name, args } of getProvider(runtime).doctorChecks()) await check(`${runtime} ${name}`, () => command(config.runtimes[runtime].path, args));
+    const required = runtime === (selected ?? pinned);
+    for (const { name, args } of getProvider(runtime).doctorChecks()) await check(`${runtime} ${name}`, () => command(config.runtimes[runtime].path, args), required);
   }
-  await check('default runtime selection', async () => { checks.push({ check: `selected runtime: ${await selectDefaultRuntime(config, { override, isAvailable: available(config) })}`, ok: true }); });
   await check('GitHub CLI authentication', () => command(config.ghPath, ['auth', 'status']));
   for (const [alias, repo] of Object.entries(config.repositories)) await check(`repository ${alias}`, () => validateRepository(repo));
   checks.push({ check: 'Slack bot token configured', ok: /^xoxb-/.test(process.env.SLACK_BOT_TOKEN || '') });

@@ -126,6 +126,7 @@ export class Bridge {
     } else {
       if (!task) return { accepted: respond('No task is bound to this thread. Start with run -- <request> in channel mode, or run repo=<alias> -- <request> in legacy alias mode.') };
       if (!['followup', 'retry'].includes(parsed.command)) return { accepted: respond('Unsupported command.') };
+      if (c.availableRuntimes && !c.availableRuntimes.includes(task.runtime)) return { accepted: respond(`Runtime ${task.runtime} is not configured or its CLI is unavailable on this host.`) };
       if (parsed.command === 'retry') {
         if (!terminal.has(task.status) || task.status === 'succeeded') return { accepted: respond('Retry applies only to failed, interrupted, or canceled tasks. Use followup for a correction.') };
         if (this.store.jobsForTask(id).some(job => job.status === 'queued')) return { accepted: respond('This task already has a queued attempt.') };
@@ -164,7 +165,13 @@ export class Bridge {
     task.stage = phase; task.status = 'running'; this.store.saveTask(task);
     job.stage = phase; job.status = 'running'; this.store.saveJob(job);
     this.store.saveOutbox(outbox(task, `Task ${task.id}: ${phase} (${job.models[phase]}).`));
-    const snapshot = async () => phase === 'implementer' ? null : [await this.git.command('git', ['rev-parse', 'HEAD'], { cwd: task.worktree, signal: controller.signal }), await this.git.command('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: task.worktree, signal: controller.signal })].join('\0');
+    const snapshot = async () => {
+      if (phase === 'implementer') return null;
+      const git = (args, input) => this.git.command('git', args, { cwd: task.worktree, signal: controller.signal, ...(input === undefined ? {} : { input }) });
+      const untracked = (await git(['ls-files', '-z', '--others', '--exclude-standard'])).split('\0').filter(Boolean);
+      const digest = untracked.length ? await git(['hash-object', '--stdin-paths'], untracked.join('\n') + '\n') : '';
+      return [await git(['rev-parse', 'HEAD']), await git(['status', '--porcelain=v1', '-z', '--untracked-files=all']), digest].join('\0');
+    };
     const before = await snapshot();
     const result = await this.runner.run({ runtime: task.runtime, phase, model: job.models[phase], cwd: task.worktree, prompt: this.prompt(task, job, phase, extra.plan, extra.implementation, extra.findings), signal: controller.signal, outputDir, gitCommonDir: task.gitCommonDir,
       onPid: async pid => { job.pid = pid; job.pidIdentity = pid ? processIdentity(pid) : null; this.store.saveJob(job); },

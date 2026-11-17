@@ -12,10 +12,11 @@ export function commandEnv() {
   result.GIT_TERMINAL_PROMPT = '0';
   return result;
 }
-export function command(executable, args, { cwd, signal, timeout = 120000 } = {}) {
+export function command(executable, args, { cwd, signal, timeout = 120000, input } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Command canceled.')); return; }
-    const child = spawn(executable, args, { cwd, env: commandEnv(), shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(executable, args, { cwd, env: commandEnv(), shell: false, detached: process.platform !== 'win32', stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+    if (input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input); }
     let stdout = '', failure, killTimer, settled = false, termination;
     let finishTermination;
     const kill = name => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, name); else child.kill(name); } catch {} };

@@ -51,7 +51,7 @@ export function createRunner(config = {}) {
     const provider = getProvider(runtime);
     const allowNetwork = config.allowNetwork === true;
     const command = config.runtimes?.[runtime]?.path || config[`${runtime}Path`] || provider.defaultCommand;
-    const args = provider.buildArgs({ phase, model, effort, cwd, readonly, gitCommonDir, allowNetwork, outputDir });
+    const args = provider.buildArgs({ phase, model, effort, cwd, readonly, gitCommonDir, allowNetwork, outputDir, skillPath: config.skillPath });
     await provider.prepare?.({ readonly, allowNetwork, outputDir });
     const timeoutMs = positiveNumber(config.timeoutMs, 30 * 60 * 1000);
     const maxOutputBytes = positiveNumber(config.maxOutputBytes, MAX_OUTPUT_BYTES);

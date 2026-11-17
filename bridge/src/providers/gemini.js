@@ -24,13 +24,14 @@ export default {
   envVars: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_PROJECT_ID', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_APPLICATION_CREDENTIALS'],
   enforcesReadonly: true,
   promptTools: { implementer: 'file reading and search, file editing, shell commands', readonly: 'file reading and search only, with no edits, shell commands, or commits' },
-  buildArgs({ model, readonly, outputDir }) {
+  buildArgs({ model, readonly, outputDir, skillPath }) {
     // --skip-trust is folder trust, not an approval bypass; without it headless runs in an untrusted folder cannot write.
     return [
       '--output-format', 'stream-json', '--model', model,
       '--approval-mode', readonly ? 'plan' : 'auto_edit',
       '--policy', policyPath({ readonly, outputDir }),
       '--allowed-mcp-server-names', '__fix_code_none__',
+      ...(skillPath ? ['--include-directories', [skillPath, outputDir].join(',')] : ['--include-directories', outputDir]),
       ...(readonly ? [] : ['--skip-trust']),
       '-p', 'Follow the task instructions provided on standard input.',
     ];

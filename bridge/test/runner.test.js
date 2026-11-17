@@ -294,7 +294,7 @@ test('Gemini runs headless with a policy file outside the worktree, stdin prompt
   process.env.SLACK_BOT_TOKEN = 'slack-secret-value'; process.env.GEMINI_API_KEY = 'gem-key'; process.env.MY_EXTRA = 'extra';
   const sessions = [];
   try {
-    const run = createRunner({ runtimes: { gemini: { path: script, env: ['MY_EXTRA'] } }, allowNetwork: false, timeoutMs: 5000 });
+    const run = createRunner({ skillPath: '/skills/fix-code', runtimes: { gemini: { path: script, env: ['MY_EXTRA'] } }, allowNetwork: false, timeoutMs: 5000 });
     const result = await run({ runtime: 'gemini', phase: 'reviewer', model: 'gem', effort: 'high', cwd, prompt: 'Review $(touch /tmp/x).', outputDir, onSession: async (id) => sessions.push(id) });
     const received = JSON.parse(await readFile(capture, 'utf8'));
     assert.equal(result.text, 'All done.');
@@ -308,6 +308,7 @@ test('Gemini runs headless with a policy file outside the worktree, stdin prompt
     assert.match(received.policy, /toolName = "write_file"\ndecision = "deny"/);
     assert.match(received.policy, /toolName = "web_fetch"\ndecision = "deny"/);
     assert.equal(received.argv[received.argv.indexOf('--policy') + 1].startsWith(outputDir), true);
+    assert.deepEqual(received.argv[received.argv.indexOf('--include-directories') + 1].split(','), ['/skills/fix-code', outputDir]);
     assert.equal(received.env.SLACK_BOT_TOKEN, undefined);
     assert.equal(received.env.GEMINI_API_KEY, 'gem-key');
     assert.equal(received.env.MY_EXTRA, 'extra');
