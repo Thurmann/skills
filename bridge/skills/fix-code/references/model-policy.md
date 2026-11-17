@@ -7,7 +7,18 @@ Use the active runtime's actual model/tool schema or supported-model listing. Ch
 1. Parse explicit human overrides first. Then use any project-scoped fix-code role preferences. Otherwise choose the defaults below.
 2. Architect/reviewer: highest reasoning capability appropriate to the task while considering standard-speed latency and price. Prefer an efficient frontier coding/reasoning model; reserve an exceptionally expensive tier for work that demonstrably needs it. Start with moderate reasoning and raise effort for difficult architecture or diagnosis.
 3. Implementer: the lowest verified effective token price among available models capable of the required coding and tools. Use current published prices or runtime-provided cost tiers where available; include cache behavior when known. If prices are unavailable, use the runtime's documented low-cost coding tier and disclose that the absolute cheapest rate was not established. Never fabricate a model identifier or price.
-4. Report the actual models and efforts once before work; note substitutions. Check provider-specific effort compatibility.
+4. Precheck: the cheapest efficient model at low effort. The same tier as the implementer is the usual choice.
+5. Report the actual models and efforts once before work; note substitutions. Check provider-specific effort compatibility.
+
+## Roles by mode
+
+| Mode | Precheck | Architect | Implementer | Reviewer |
+| --- | --- | --- | --- | --- |
+| Simple | cheapest, low effort | none | one agent, cheapest efficient model | none |
+| Medium | cheapest, low effort | optional, for bounded diagnosis only | cheap subagents per subtask | only when the diff exceeds the precheck prediction |
+| Advanced | cheapest, low effort | required, plans before edits | cheap subagents per unit | required, fresh architect-class instance |
+
+For Simple, "cheapest efficient" means the least expensive model that still completes small coding edits reliably with the required tools. Do not pick a model so weak that it needs repeated retries. In Claude Code, this is normally the `haiku` alias for the precheck and Simple, and for Medium/Advanced implementers unless a unit needs more capability. The strongest efficient Claude model fills the architect and reviewer roles. Validate aliases against the runtime as usual.
 
 As of the initial skill creation, official Codex documentation suggests GPT-6.1 Sol for demanding reasoning and GPT-6 Luna for narrow high-volume work. These are useful starting candidates, not pinned requirements or guarantees of account availability. Claude Code must use its supported Claude model aliases/IDs instead; do not pass GPT IDs to its Agent tool. Select the strongest efficient supported Claude model for architecture and its least expensive capable model for implementation.
 
@@ -44,7 +55,7 @@ When independent model selection is unavailable, disclose this before bulk imple
 
 ## Keep the split economical
 
-Most exploration, implementation, checks, and first-pass repairs belong to the implementer. Keep strong-model consultations bounded by a question, diff, and evidence. Do not request a strong-model rewrite of every worker report. Fresh strong review is justified for significant behavior, architecture, security, or concurrency; a tiny obvious fix does not need a panel.
+Most exploration, implementation, checks, and first-pass repairs belong to the implementer. Keep strong-model consultations bounded by a question, diff, and evidence. Do not request a strong-model rewrite of every worker report. The [mode rules](modes.md) decide when a fresh strong review runs; a tiny obvious fix does not need a panel.
 
 After two evidence-driven repair attempts fail for the same unresolved cause, consult the architect with actual failing commands/output and attempts. Missing credentials, offline tools, or a broken environment are not automatically reasoning failures. Do not pay for a stronger model to repeat those failures.
 

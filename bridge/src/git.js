@@ -111,9 +111,15 @@ export async function publishPR(config, task, result, outputDir, signal) {
   await command('git', ['push', task.repository.remote, `HEAD:refs/heads/${task.branch}`], { cwd: task.worktree, signal });
   await guardCheck(config, task.guardState, signal);
   let pr = existing;
-  if (!pr) {
+  const text = `This change addresses the authenticated Slack task ${task.id}.\n\n${result.slice(0, 12000)}\n\nBridge verification completed before publication; the mode and review outcome are stated above. Review the evidence and diff before merging.\n`;
+  if (existing) {
+    // Followups reuse the PR, so publish this job's mode/review outcome as a comment.
+    const note = path.join(outputDir, 'pull-request-update.md');
+    fs.writeFileSync(note, text, { mode: 0o600 });
+    await command(config.ghPath, ['pr', 'comment', String(existing.url || existing.number), '--repo', task.repository.github, '--body-file', note], { cwd: task.worktree, signal });
+  } else {
     const body = path.join(outputDir, 'pull-request.md');
-    fs.writeFileSync(body, `This change addresses the authenticated Slack task ${task.id}.\n\n${result.slice(0, 12000)}\n\nValidation and independent review completed before publication. Review the evidence and diff before merging.\n`, { mode: 0o600 });
+    fs.writeFileSync(body, text, { mode: 0o600 });
     const title = `fix-code: ${task.initialRequest.split('\n')[0]}`.slice(0, 100);
     await command(config.ghPath, ['pr', 'create', '--repo', task.repository.github, '--head', task.branch, '--base', task.repository.baseBranch, '--draft', '--title', title, '--body-file', body], { cwd: task.worktree, signal });
     pr = await findPR(config, task, signal);

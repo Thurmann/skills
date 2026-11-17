@@ -185,6 +185,282 @@ class GitGuardTests(unittest.TestCase):
         self.git(self.repo, 'branch', 'trunk')
         self.assertIn('trunk', self.guard('check', '--state', state['state'], expected=2)['error'])
 
+    def start_in_place(self, *extra):
+        return self.guard('start', '--repo', self.repo, '--name', 'fixture change',
+                          '--base', 'main', '--in-place', *extra)
+
+    def commit_in(self, path):
+        (Path(path)/'feature.txt').write_text('task-owned\n')
+        self.git(path, 'add', 'feature.txt')
+        self.git(path, 'commit', '-m', 'Implement fixture change')
+
+    def branches(self):
+        return self.git(self.repo, 'for-each-ref', '--format=%(refname)', 'refs/heads')
+
+    def test_in_place_start_creates_fresh_branch_in_checkout(self):
+        main = self.git(self.repo, 'rev-parse', 'main')
+        state = self.start_in_place()
+        self.assertEqual(Path(state['worktree']), self.repo.resolve())
+        self.assertNotEqual(state['branch'], 'main')
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+        saved = json.loads(Path(state['state']).read_text())
+        self.assertTrue(saved['in_place'])
+        self.assertEqual(saved['original_branch'], 'main')
+        self.assertEqual(saved['original_head'], main)
+        self.commit_in(self.repo)
+        self.guard('check', '--state', state['state'])
+        self.assertEqual(self.git(self.repo, 'rev-parse', 'main'), main)
+
+    def test_worktree_start_records_not_in_place(self):
+        state = self.start()
+        self.assertFalse(json.loads(Path(state['state']).read_text())['in_place'])
+
+    def test_in_place_refuses_dirty_tracked_changes(self):
+        (self.repo/'app.txt').write_text('user edits\n')
+        before = self.branches()
+        head = self.git(self.repo, 'rev-parse', 'HEAD')
+        result = self.guard('start', '--repo', self.repo, '--name', 'x', '--base', 'main',
+                            '--in-place', expected=2)
+        self.assertIn('worktree', result['error'])
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), 'main')
+        self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), head)
+        self.assertEqual(self.branches(), before)
+        self.assertEqual((self.repo/'app.txt').read_text(), 'user edits\n')
+
+    def test_in_place_allows_and_preserves_untracked_files(self):
+        (self.repo/'personal.txt').write_text('mine\n')
+        state = self.start_in_place()
+        self.assertEqual((self.repo/'personal.txt').read_text(), 'mine\n')
+        self.guard('check', '--state', state['state'])
+
+    def test_in_place_refuses_unfinished_merge(self):
+        marker = Path(self.git(self.repo, 'rev-parse', '--absolute-git-dir'))/'MERGE_HEAD'
+        marker.write_text(self.git(self.repo, 'rev-parse', 'HEAD')+'\n')
+        before = self.branches()
+        result = self.guard('start', '--repo', self.repo, '--name', 'x', '--base', 'main',
+                            '--in-place', expected=2)
+        self.assertIn('unfinished Git operation', result['error'])
+        self.assertEqual(self.branches(), before)
+
+    def test_in_place_refuses_linked_worktree(self):
+        state = self.start()
+        result = self.guard('start', '--repo', state['worktree'], '--name', 'x',
+                            '--base', 'main', '--in-place', expected=2)
+        self.assertIn('main checkout', result['error'])
+
+    def test_in_place_conflicts_with_worktree(self):
+        before = self.branches()
+        result = self.guard('start', '--repo', self.repo, '--name', 'x', '--base', 'main',
+                            '--in-place', '--worktree', self.root/'worktrees'/'both', expected=2)
+        self.assertIn('mutually exclusive', result['error'])
+        self.assertEqual(self.branches(), before)
+        self.assertFalse((self.root/'worktrees'/'both').exists())
+
+    def test_in_place_detects_protected_ref_change(self):
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        self.git(self.repo, 'update-ref', 'refs/heads/main', self.git(self.repo, 'rev-parse', 'HEAD'))
+        self.assertIn('Protected ref changed', self.guard('check', '--state', state['state'], expected=2)['error'])
+
+    def test_relocate_moves_task_to_worktree(self):
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        destination = self.root/'worktrees'/'relocated'
+        moved = self.guard('relocate', '--state', state['state'], '--worktree', destination)
+        self.assertEqual(Path(moved['worktree']), destination.resolve())
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), 'main')
+        self.assertEqual(self.git(destination, 'branch', '--show-current'), state['branch'])
+        self.assertEqual((destination/'feature.txt').read_text(), 'task-owned\n')
+        saved = json.loads(Path(state['state']).read_text())
+        self.assertFalse(saved['in_place'])
+        self.assertEqual(Path(saved['relocated_from']), self.repo.resolve())
+        self.guard('check', '--state', state['state'])
+
+    def test_relocate_refuses_dirty_checkout(self):
+        state = self.start_in_place()
+        (self.repo/'app.txt').write_text('uncommitted\n')
+        destination = self.root/'worktrees'/'dirty'
+        result = self.guard('relocate', '--state', state['state'], '--worktree', destination, expected=2)
+        self.assertIn('commit', result['error'])
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+        self.assertFalse(destination.exists())
+
+    def test_relocate_refuses_worktree_state(self):
+        state = self.start()
+        result = self.guard('relocate', '--state', state['state'],
+                            '--worktree', self.root/'worktrees'/'nope', expected=2)
+        self.assertIn('not an in-place', result['error'])
+
+    def test_relocate_refuses_destination_inside_checkout_without_switching(self):
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        destination = self.repo/'inside'
+        result = self.guard('relocate', '--state', state['state'], '--worktree', destination, expected=2)
+        self.assertIn('outside and separate', result['error'])
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+        self.assertFalse(destination.exists())
+        self.guard('check', '--state', state['state'])
+
+    def test_restore_returns_checkout_to_original_branch(self):
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        result = self.guard('restore', '--state', state['state'])
+        self.assertEqual(result, {'ok': True, 'restored': True, 'branch': state['branch'],
+                                  'checkout_branch': 'main'})
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), 'main')
+        self.assertIn('refs/heads/'+state['branch'], self.branches())
+        saved = json.loads(Path(state['state']).read_text())
+        self.assertTrue(saved['restored'])
+        self.assertIn('wrong branch', self.guard('check', '--state', state['state'], expected=2)['error'])
+
+    def test_restore_returns_to_detached_original_head(self):
+        head = self.git(self.repo, 'rev-parse', 'HEAD')
+        self.git(self.repo, 'switch', '--detach')
+        state = self.start_in_place()
+        self.assertIsNone(json.loads(Path(state['state']).read_text())['original_branch'])
+        self.commit_in(self.repo)
+        result = self.guard('restore', '--state', state['state'])
+        self.assertIsNone(result['checkout_branch'])
+        self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), head)
+        self.assertIn('refs/heads/'+state['branch'], self.branches())
+
+    def test_restore_refuses_dirty_and_worktree_states(self):
+        state = self.start_in_place()
+        (self.repo/'app.txt').write_text('uncommitted\n')
+        self.guard('restore', '--state', state['state'], expected=2)
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+        other = self.start()
+        self.assertIn('not an in-place', self.guard('restore', '--state', other['state'], expected=2)['error'])
+
+    def collision_setup(self):
+        (self.repo/'secret.txt').write_text('base\n')
+        self.git(self.repo, 'add', 'secret.txt')
+        self.git(self.repo, 'commit', '-m', 'Track secret in base')
+        self.git(self.repo, 'switch', '-c', 'user')
+        self.git(self.repo, 'rm', '--cached', 'secret.txt')
+        (self.repo/'.gitignore').write_text('secret.txt\n')
+        self.git(self.repo, 'add', '.gitignore')
+        self.git(self.repo, 'commit', '-m', 'Ignore secret')
+        (self.repo/'secret.txt').write_text('precious\n')
+
+    def test_in_place_refuses_ignored_file_colliding_with_base(self):
+        self.collision_setup()
+        before = self.branches()
+        result = self.guard('start', '--repo', self.repo, '--name', 'x', '--base', 'main',
+                            '--in-place', expected=2)
+        self.assertIn('worktree', result['error'])
+        self.assertNotIn('precious', result['error'])
+        self.assertEqual((self.repo/'secret.txt').read_text(), 'precious\n')
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), 'user')
+        self.assertEqual(self.branches(), before)
+
+    def test_in_place_refuses_collision_differing_only_in_case(self):
+        (self.repo/'Settings.local').write_text('base\n')
+        self.git(self.repo, 'add', 'Settings.local')
+        self.git(self.repo, 'commit', '-m', 'Track settings in base')
+        self.git(self.repo, 'switch', '-c', 'user')
+        self.git(self.repo, 'rm', '--quiet', 'Settings.local')
+        (self.repo/'.gitignore').write_text('settings.local\n')
+        self.git(self.repo, 'add', '.gitignore')
+        self.git(self.repo, 'commit', '-m', 'Ignore local settings')
+        (self.repo/'settings.local').write_text('mine\n')
+        before = self.branches()
+        result = self.guard('start', '--repo', self.repo, '--name', 'x', '--base', 'main',
+                            '--in-place', expected=2)
+        self.assertIn('worktree', result['error'])
+        self.assertEqual((self.repo/'settings.local').read_text(), 'mine\n')
+        self.assertEqual(self.branches(), before)
+
+    def test_in_place_from_other_branch_restores_to_it(self):
+        self.git(self.repo, 'switch', '-c', 'dev')
+        (self.repo/'dev.txt').write_text('dev\n')
+        self.git(self.repo, 'add', 'dev.txt')
+        self.git(self.repo, 'commit', '-m', 'Dev work')
+        dev = self.git(self.repo, 'rev-parse', 'dev')
+        state = self.start_in_place()
+        self.assertFalse((self.repo/'dev.txt').exists())
+        self.commit_in(self.repo)
+        self.guard('restore', '--state', state['state'])
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), 'dev')
+        self.assertEqual(self.git(self.repo, 'rev-parse', 'dev'), dev)
+
+    def test_restore_refuses_ignored_file_collision(self):
+        state = self.start_in_place()
+        self.git(self.repo, 'rm', 'app.txt')
+        (self.repo/'.gitignore').write_text('app.txt\n')
+        self.git(self.repo, 'add', '.gitignore')
+        self.git(self.repo, 'commit', '-m', 'Drop app, ignore it')
+        (self.repo/'app.txt').write_text('precious\n')
+        result = self.guard('restore', '--state', state['state'], expected=2)
+        self.assertNotIn('precious', result['error'])
+        self.assertEqual((self.repo/'app.txt').read_text(), 'precious\n')
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+
+    def test_relocate_refuses_untracked_path_under_target_file(self):
+        state = self.start_in_place()
+        self.git(self.repo, 'rm', 'app.txt')
+        (self.repo/'app.txt').mkdir()
+        (self.repo/'app.txt'/'x').write_text('precious\n')
+        (self.repo/'.gitignore').write_text('app.txt/\n')
+        self.git(self.repo, 'add', '.gitignore')
+        self.git(self.repo, 'commit', '-m', 'Replace file by ignored dir')
+        self.guard('relocate', '--state', state['state'],
+                   '--worktree', self.root/'worktrees'/'rev', expected=2)
+        self.assertEqual((self.repo/'app.txt'/'x').read_text(), 'precious\n')
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+
+    def test_relocate_and_restore_refuse_new_task_files(self):
+        (self.repo/'personal.txt').write_text('mine\n')
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        (self.repo/'notes.txt').write_text('task notes\n')
+        for args in (['relocate', '--worktree', self.root/'worktrees'/'new-files'], ['restore']):
+            result = self.guard(*args[:1], '--state', state['state'], *args[1:], expected=2)
+            self.assertIn('commit or remove new task files first', result['error'])
+            self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+        (self.repo/'notes.txt').unlink()
+        self.guard('restore', '--state', state['state'])
+        self.assertEqual((self.repo/'personal.txt').read_text(), 'mine\n')
+
+    def test_relocate_after_restore_creates_worktree(self):
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        self.guard('restore', '--state', state['state'])
+        destination = self.root/'worktrees'/'after-restore'
+        moved = self.guard('relocate', '--state', state['state'], '--worktree', destination)
+        self.assertEqual(Path(moved['worktree']), destination.resolve())
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), 'main')
+        self.assertEqual((destination/'feature.txt').read_text(), 'task-owned\n')
+        saved = json.loads(Path(state['state']).read_text())
+        self.assertFalse(saved['in_place'])
+        self.assertFalse(saved['restored'])
+        self.guard('check', '--state', state['state'])
+
+    def test_relocate_rolls_back_when_worktree_add_fails(self):
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        blocker = self.root/'blocker'
+        blocker.write_text('file')
+        self.guard('relocate', '--state', state['state'],
+                   '--worktree', blocker/'wt', expected=2)
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+        self.assertTrue(json.loads(Path(state['state']).read_text())['in_place'])
+        self.guard('check', '--state', state['state'])
+
+    def test_relocate_and_restore_refuse_deleted_original_branch(self):
+        self.git(self.repo, 'switch', '-c', 'feature-x')
+        for command in ('relocate', 'restore'):
+            state = self.start_in_place()
+            self.commit_in(self.repo)
+            self.git(self.repo, 'branch', '-D', 'feature-x')
+            args = ['--worktree', self.root/'worktrees'/'gone'] if command == 'relocate' else []
+            result = self.guard(command, '--state', state['state'], *args, expected=2)
+            self.assertIn('no longer exists', result['error'])
+            self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+            self.git(self.repo, 'branch', 'feature-x', 'main')
+            self.git(self.repo, 'switch', 'feature-x')
+            self.git(self.repo, 'branch', '-D', state['branch'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

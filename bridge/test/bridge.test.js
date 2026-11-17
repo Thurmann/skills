@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Bridge } from '../src/bridge.js';
+import { Bridge, parsePrecheck } from '../src/bridge.js';
 import { Store } from '../src/store.js';
 
 function fixture(t, options = {}) {
@@ -12,8 +12,8 @@ function fixture(t, options = {}) {
   const store = new Store(path.join(folder, 'state.sqlite'));
   t.after(() => store.close());
   const repository = { path: folder, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' };
-  const config = { teamId: 'T123', allowedUsers: ['U123', 'U456'], allowedChannels: ['C123'], operators: [], runtime: 'codex', repositories: { app: repository }, stateDir: folder, skillPath: '/fixture/skill', allowNetwork: true, maxRepairRounds: 1, models: { codex: { architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] } };
-  const calls = [], posts = []; let publications = 0;
+  const config = { teamId: 'T123', allowedUsers: ['U123', 'U456'], allowedChannels: ['C123'], operators: [], runtime: 'codex', repositories: { app: repository }, stateDir: folder, skillPath: '/fixture/skill', allowNetwork: true, maxRepairRounds: 1, models: { codex: { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] } };
+  const calls = [], posts = [], commands = [], published = []; let publications = 0;
   const runner = { async run(request) {
     calls.push(request);
     if (options.run) return options.run(request, calls);
@@ -22,11 +22,11 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command() { return '2 files changed'; },
-    async publishPR() { publications++; return 'https://github.com/example/app/pull/1'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return options.startCommit ?? 'start0\n'; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async publishPR(c, task, result) { publications++; published.push(result); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
-  return { folder, store, config, calls, posts, bridge, publications: () => publications };
+  return { folder, store, config, calls, posts, commands, published, bridge, publications: () => publications };
 }
 function event(text = '<@UBOT> run repo=app -- fix the bug', overrides = {}) {
   return { team_id: 'T123', event_id: 'Ev1', event: { type: 'app_mention', user: 'U123', channel: 'C123', ts: '123.1', text, ...overrides } };
@@ -39,7 +39,7 @@ test('durable intake deduplicates events and executes strong/cheap/strong with o
   assert.equal((await f.bridge.receive(event())).accepted, false);
   assert.equal(f.store.listJobs().length, 1);
   await f.bridge.tick();
-  assert.deepEqual(f.calls.map(c => c.model), ['strong', 'cheap', 'strong']);
+  assert.deepEqual(f.calls.map(c => c.model), ['cheap', 'strong', 'cheap', 'strong']);
   assert.equal(f.publications(), 1);
   assert.equal(f.store.getTask(accepted.taskId).status, 'succeeded');
   assert.match(f.calls[1].prompt, /Do not push or create a PR yourself/);
@@ -120,8 +120,126 @@ test('repair loop is bounded and uses cheap model before a fresh review', async 
   let reviews = 0;
   const f = fixture(t, { run: async request => ({ text: request.phase === 'reviewer' ? JSON.stringify({ verdict: ++reviews === 1 ? 'changes_requested' : 'pass', summary: 'review', findings: reviews === 1 ? ['add regression'] : [] }) : 'evidence' }) });
   await f.bridge.receive(event()); await f.bridge.tick();
-  assert.deepEqual(f.calls.map(c => c.phase), ['architect', 'implementer', 'reviewer', 'implementer', 'reviewer']);
+  assert.deepEqual(f.calls.map(c => c.phase), ['precheck', 'architect', 'implementer', 'reviewer', 'implementer', 'reviewer']);
   assert.equal(f.publications(), 1);
+});
+
+const pre = (mode, extra = {}) => JSON.stringify({ mode, reason: 'because', predicted_files: 2, predicted_areas: ['src'], risk_flags: [], confidence: 'high', ...extra });
+const modeRun = (precheck, impl = 'done') => async request => ({ text: request.phase === 'precheck' ? precheck : request.phase === 'reviewer' ? '{"verdict":"pass","summary":"ok","findings":[]}' : impl });
+const phases = f => f.calls.map(c => c.phase);
+
+test('simple mode skips architect and reviewer and publishes with the outcome stated', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')) });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'implementer']);
+  assert.equal(f.publications(), 1);
+  const job = f.store.listJobs()[0];
+  assert.equal(job.mode, 'simple'); assert.equal(f.store.listTasks()[0].mode, 'simple');
+  assert.match(f.calls[1].prompt, /Execution mode: simple/);
+  assert.match(f.calls[1].prompt, /SCOPE_EXCEEDED/);
+  assert.match(f.store.listOutbox().at(-1).text, /Independent review: not required/);
+});
+
+test('simple escalates to medium on SCOPE_EXCEEDED and then runs the reviewer', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple'), 'done\nSCOPE_EXCEEDED: touched auth') });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'implementer', 'reviewer']);
+  const job = f.store.listJobs()[0];
+  assert.equal(job.mode, 'medium'); assert.equal(job.escalation.from, 'simple');
+  assert.equal(f.publications(), 1);
+  assert.match(f.store.listOutbox().at(-1).text, /Independent review: passed/);
+});
+
+test('simple escalates when more than three files change', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a\nb\nc\nd' });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'implementer', 'reviewer']);
+});
+
+test('medium within prediction skips review; exceeding the prediction requires it', async t => {
+  const f = fixture(t, { run: modeRun(pre('medium', { predicted_files: 4 })), nameOnly: 'a\nb\nc\nd' });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'implementer']);
+  assert.equal(f.publications(), 1);
+  const g = fixture(t, { run: modeRun(pre('medium', { predicted_files: 2 })), nameOnly: 'a\nb\nc\nd\ne' });
+  await g.bridge.receive(event()); await g.bridge.tick();
+  assert.deepEqual(phases(g), ['precheck', 'implementer', 'reviewer']);
+  assert.equal(g.publications(), 1);
+});
+
+test('explicit mode= skips precheck; followup never auto-downgrades but explicit mode can lower', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')) });
+  await f.bridge.receive(event('<@UBOT> run repo=app mode=advanced -- big change')); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['architect', 'implementer', 'reviewer']);
+  assert.equal(f.store.listTasks()[0].mode, 'advanced');
+  f.calls.length = 0;
+  await f.bridge.receive({ ...event('<@UBOT> followup -- tweak', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' }); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'architect', 'implementer', 'reviewer']);
+  f.calls.length = 0;
+  await f.bridge.receive({ ...event('<@UBOT> followup mode=simple -- tiny', { thread_ts: '123.1', ts: '123.3' }), event_id: 'Ev3' }); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['implementer']);
+  assert.equal(f.store.getTask(f.store.listTasks()[0].id).mode, 'simple');
+});
+
+test('in-prediction medium with SCOPE_EXCEEDED is reviewed', async t => {
+  const f = fixture(t, { run: modeRun(pre('medium', { predicted_files: 4 }), 'done\nSCOPE_EXCEEDED: extra area'), nameOnly: 'a\nb' });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['precheck', 'implementer', 'reviewer']);
+});
+
+test('explicit mode=medium always runs independent review', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')) });
+  await f.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['implementer', 'reviewer']);
+  assert.match(f.store.listOutbox().at(-1).text, /Independent review: passed/);
+});
+
+test('published result leads with the outcome even when implementer output is huge', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple'), 'x'.repeat(13000)) });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.equal(f.published.length, 1);
+  assert.match(f.published[0].slice(0, 12000), /^Mode: simple\. Independent review: not required/);
+});
+
+test('low-confidence precheck through tick bumps simple to medium', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple', { confidence: 'low' })) });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.equal(f.store.listJobs()[0].mode, 'medium');
+  assert.deepEqual(phases(f), ['precheck', 'implementer', 'reviewer'].slice(0, 2).concat(f.calls.length > 2 ? ['reviewer'] : []));
+});
+
+test('change counting uses the job start commit, not the task base', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')), startCommit: 'abc123\n' });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  const names = f.commands.find(a => a.includes('--name-only'));
+  assert.ok(names.includes('abc123..HEAD'));
+  assert.equal(f.store.listJobs()[0].startCommit, 'abc123');
+});
+
+test('retry keeps the previous explicit mode', async t => {
+  let fail = true;
+  const f = fixture(t, { run: async request => { if (request.phase === 'implementer' && fail) { fail = false; throw new Error('boom'); } return modeRun(pre('simple'))(request); } });
+  await f.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await f.bridge.tick();
+  assert.equal(f.store.listJobs()[0].status, 'failed');
+  await f.bridge.receive({ ...event('<@UBOT> retry', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  assert.equal(f.store.listJobs().at(-1).requestedMode, 'medium');
+});
+
+test('parsePrecheck normalizes unreadable, low-confidence, risky and invalid predictions', () => {
+  assert.equal(parsePrecheck('nope').mode, 'advanced');
+  assert.equal(parsePrecheck(pre('simple', { confidence: 'low' })).mode, 'medium');
+  assert.equal(parsePrecheck(pre('medium', { confidence: 'low' })).mode, 'advanced');
+  assert.equal(parsePrecheck(pre('simple', { risk_flags: ['auth'] })).mode, 'medium');
+  assert.equal(parsePrecheck('```json\n' + pre('simple') + '\n```').mode, 'simple');
+  assert.equal(parsePrecheck(pre('simple', { predicted_files: 0 })).predicted_files, null);
+  assert.equal(parsePrecheck(pre('simple', { predicted_files: 1.5 })).predicted_files, null);
+  assert.equal(parsePrecheck(pre('bogus')).mode, 'advanced');
+});
+
+test('unreadable precheck falls back to advanced in the pipeline', async t => {
+  const f = fixture(t);
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.equal(f.store.listJobs()[0].mode, 'advanced');
 });
 
 test('cancellation aborts active run and never publishes', async t => {

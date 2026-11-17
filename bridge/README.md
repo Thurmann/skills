@@ -2,7 +2,7 @@
 
 Send a task from Slack on your phone, let a local coding runner use `fix-code`, and receive a draft pull request in the same Slack thread.
 
-This bridge uses Slack Socket Mode, a durable SQLite queue, and the Codex CLI by default. It includes a Claude Code adapter. It creates an isolated branch/worktree before coding and orchestrates architecture → implementation → independent review → controlled branch push → draft PR.
+This bridge uses Slack Socket Mode, a durable SQLite queue, and the Codex CLI by default. It includes a Claude Code adapter. It creates an isolated branch/worktree before coding and orchestrates a read-only precheck that classifies each task as simple, medium, or advanced → implementation → independent review only where the mode requires it (advanced always adds architecture first) → controlled branch push → draft PR.
 
 **Status:** implementation and local fixture tests are complete. Live Slack delivery, model execution, and GitHub publication require your configuration and have not been exercised by the offline test suite. No background service is enabled automatically.
 
@@ -13,7 +13,7 @@ This bridge uses Slack Socket Mode, a durable SQLite queue, and the Codex CLI by
 - GitHub CLI authenticated (`gh auth status`) with access to the repositories you want the bridge to use. Channel routing requires push permission for the selected repository.
 - A Slack workspace where the app can read public/private channel metadata, plus your allowed user/channel/workspace IDs.
 
-A snapshot of the `fix-code` skill is bundled under `skills/fix-code`. The runner reads it directly, so the bridge does not depend on a user-global skill installation. Point `skillPath` at another reviewed installation if desired. Changes to a global skill are not automatically synchronized into this snapshot.
+A snapshot of the `fix-code` skill is bundled under `skills/fix-code`. The runner reads it directly, so the bridge does not depend on a user-global skill installation. Point `skillPath` at another reviewed installation if desired. Changes to a global skill are not automatically synchronized into this snapshot. The bundled snapshot has been synced to the current `fix-code` skill version, which includes the simple/medium/advanced modes and the precheck; re-sync it manually when the global skill changes.
 
 ## 1. Install dependencies and initialize private configuration
 
@@ -64,7 +64,7 @@ Replace every placeholder in the generated configuration:
 - `repositoryRouting.allowedOwners` (optional): GitHub owners the channel resolver may select. An empty list allows any matching repository the `gh` account can access.
 - `repositoryRouting.channelOwners` (optional): channel ID to owner hints, for example `{"C123": "example-org"}`, to disambiguate same-named repositories.
 - `repositories`: used only in explicit `aliases` mode for older configurations.
-- `models`: architecture/implementation/review defaults for the selected runtime.
+- `models`: precheck/architecture/implementation/review defaults for the selected runtime. `precheck` is optional and defaults to the implementer model; every value must be in `allowedModels`.
 - `allowedModels`: explicit override allowlists, validated against the models you can actually run.
 
 The generated example uses channel routing and does not need a `repositories` alias map. The default clone root is `<stateDir>/repositories`. A channel name such as `billing-service` selects only a repository whose GitHub repository name matches `billing-service`, ignoring case. The bridge gets the channel's authoritative name and ID from Slack `conversations.info` and searches all accessible GitHub repositories using paginated `gh` results, including repositories owned by you, shared with you, or visible through an organization. It requires push permission before starting work.
@@ -93,7 +93,7 @@ In aliases mode, an entry maps an alias to an exact local Git root, base refs, t
 
 `base` and `baseBranch` must describe the same base. The bridge verifies the repository's push URL against the configured GitHub owner/repo. GitHub.com repositories are supported; GitLab/enterprise-hosted forges require another publisher adapter.
 
-The example selects GPT-6.1 Sol for architecture/review and GPT-6 Luna for implementation. Those are candidates, not a guarantee of your account's access. Update both defaults and the allowlist to your supported models. Claude candidates are `opus`/`haiku`, also subject to your installed CLI/account. A rejected model stops the run; it is never silently replaced with a more expensive model.
+The example selects GPT-6.1 Sol for architecture/review, and GPT-6 Luna for precheck and implementation. Those are candidates, not a guarantee of your account's access. Update the defaults and the allowlist to your supported models. Claude candidates are `opus` for architecture/review and `haiku` for precheck and implementation, also subject to your installed CLI/account. A rejected model stops the run; it is never silently replaced with a more expensive model.
 
 `allowNetwork: true` permits configured Codex workspace networking and bridge fetch/push/PR operations. With it false, the bridge cannot finish PR delivery. Claude's network policy is an instruction here, not an enforced network sandbox. No runtime is launched with approval/sandbox bypass flags. CLI actions requiring an unavailable interactive approval fail and preserve the task.
 
@@ -134,7 +134,22 @@ Override models **before** the separator:
 @Fix Code run architect_model=gpt-6.1-sol implementer_model=gpt-6-luna -- Add pagination.
 ```
 
-`model=<id>` overrides every role; a role-specific option takes precedence. Models must be in the configured runtime allowlist. Text after `--` is request data and cannot set runner flags or model options. Model selection uses explicit phase-level CLI invocations, rather than relying on nested model delegation.
+`model=<id>` overrides every role; a role-specific option takes precedence. `precheck_model=<id>` overrides only the precheck role. Models must be in the configured runtime allowlist.
+
+Complexity modes are selected before the separator too:
+
+```text
+@Fix Code run mode=advanced -- Refactor the auth module.
+```
+
+- Without `mode=`, a read-only precheck classifies the task as `simple`, `medium`, or `advanced`. Unreadable precheck output falls back to `advanced`. Low confidence bumps the mode up one level. Security, auth, data, migration, or concurrency risk flags forbid `simple`.
+- `mode=simple|medium|advanced` skips the precheck and sets the mode directly. It can lower the mode the precheck would choose. An explicit `simple` can still escalate to `medium` (more than 3 files changed or `SCOPE_EXCEEDED`), and an explicit `medium` always runs independent review because there is no file prediction. Escalation and prediction checks count only the current job's commits. `retry` keeps the previous explicit `mode=`.
+- Followups without `mode=` never drop below the task's previous mode.
+- `simple`: implementer only, with no architect and no independent reviewer. It escalates to `medium` if more than 3 files change or the implementer reports `SCOPE_EXCEEDED:`.
+- `medium`: no architect. Independent review runs only if there is no file prediction, the task was escalated, changed files exceed the prediction by 3 or more or by more than half, or `SCOPE_EXCEEDED` was reported.
+- `advanced`: architect → implementer → mandatory independent review with bounded repair rounds, as before.
+
+Every outcome is still a draft PR. Followups on an existing PR post the new job's outcome as a PR comment. The final Slack message and the PR body state the mode and whether independent review ran. **Trade-off:** `simple` jobs, and `medium` jobs whose changes stay within the prediction, publish a draft PR **without** independent review. Use `mode=advanced` when you want the full pipeline for a change. Text after `--` is request data and cannot set runner flags or model options. Model selection uses explicit phase-level CLI invocations, rather than relying on nested model delegation.
 
 In that task's thread:
 
@@ -161,9 +176,9 @@ One global worker runs at a time. Independent Slack tasks are queued, preventing
 
 The original checkout, its dirty files, and protected branches remain outside the coding worktree. The guard checks the task branch, protected refs, base ancestry, remote routing, and history checkpoints. It detects violations; it is not a Git hook or a complete shell-security boundary. Do not authorize untrusted people to operate this local coding account.
 
-Each attempt uses fresh architecture/implementation/review phase sessions, with persisted task context, plan, result, and artifacts. It does **not** attach to or resume an arbitrary desktop/mobile chat. Session IDs are saved for audit. The bridge explicitly tells the skill to use the worktree it already prepared rather than creating a second one.
+Each attempt uses fresh precheck/architecture/implementation/review phase sessions as its mode requires, with persisted task context, plan, result, and artifacts. It does **not** attach to or resume an arbitrary desktop/mobile chat. Session IDs are saved for audit. The bridge explicitly tells the skill to use the worktree it already prepared rather than creating a second one. The bridge always prepares a separate worktree in every mode, because it runs unattended and may reuse local checkouts; the skill's in-place option is not used by the bridge.
 
-Implementation must leave ordinary commits and a clean worktree. The independent reviewer reads the real patch and checks evidence. Requests for changes get at most the configured repair rounds. Blocked, malformed, or contradictory review verdicts prevent publication.
+Implementation must leave ordinary commits and a clean worktree. In `advanced` mode, and in `medium` or escalated `simple` cases that meet the review rules above, the independent reviewer reads the real patch and checks evidence. Other `simple` and in-prediction `medium` jobs skip it, and the bridge's own verification is the only check before the draft PR. Requests for changes get at most the configured repair rounds. Blocked, malformed, or contradictory review verdicts prevent publication.
 
 Only the bridge publisher pushes the explicit task branch and creates/reuses a draft PR for that exact head/base. It checks the GitHub remote and existing PR state first. No merges, force pushes, rebases, amends, resets, or deployments are part of the workflow. Model calls remain responsible for following the skill's restrictions inside their available permissions.
 

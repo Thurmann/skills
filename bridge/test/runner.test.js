@@ -128,6 +128,25 @@ test('Claude stream-json extracts init session, result text, and usage with norm
   assert.deepEqual(argv.slice(toolsIndex + 1, toolsIndex + 4), ['Read', 'Glob', 'Grep']);
 });
 
+test('precheck phase is accepted and gets read-only Claude tools in plan mode', async () => {
+  const capture = path.join(testRoot, 'precheck-argv.json');
+  const script = await makeExecutable('claude-precheck', `
+    import { writeFileSync } from 'node:fs';
+    for await (const _chunk of process.stdin) {}
+    writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));
+    process.stdout.write(JSON.stringify({ type: 'result', result: 'simple' }) + '\\n');
+  `);
+  const cwd = await makeCwd();
+  const result = await createRunner({ claudePath: script })({ runtime: 'claude', phase: 'precheck', model: 'haiku', cwd, prompt: 'Classify.' });
+  const argv = JSON.parse(await readFile(capture, 'utf8'));
+  assert.equal(result.text, 'simple');
+  assert.equal(argv[argv.indexOf('--permission-mode') + 1], 'plan');
+  const toolsIndex = argv.indexOf('--tools');
+  assert.deepEqual(argv.slice(toolsIndex + 1, toolsIndex + 4), ['Read', 'Glob', 'Grep']);
+  assert.equal(argv.includes('Bash'), false);
+  assert.equal(argv.includes('Edit'), false);
+});
+
 test('nonzero exit returns a useful status without exposing stderr', async () => {
   const script = await makeExecutable('codex-failure', `
     process.stderr.write('private-provider-detail API_KEY=do-not-leak\\n');

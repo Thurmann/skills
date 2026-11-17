@@ -10,7 +10,41 @@ Use the bundled helper by its actual absolute path:
 python3 <skill>/scripts/git_guard.py start --repo <repo> --name <task-slug> --base <verified-base-ref>
 ```
 
-It creates a new `fix-code/<slug>-<unique-id>` branch in a separate worktree and stores guard state under the Git common directory. By default, the worktree is `~/workspace/worktrees/<repository-directory-name>/fix-code-<slug>-<unique-id>`, even when the source checkout is elsewhere. It preserves the original dirty checkout, records protected local refs and base ancestry, and returns JSON paths. Branch names are always new; it does not reuse an existing branch. Pass `--protect <default-branch-name>` when a non-origin default is not otherwise discoverable or the selected base differs from that default. Optional `--worktree <new-path>` selects a destination outside and separate from the original checkout; the helper rejects destinations inside or above the source checkout. Never point it at existing user files. Invoke with an argument array or correct shell quoting.
+Two forms, chosen by the workspace rule in SKILL.md. Both create a new `fix-code/<slug>-<unique-id>` branch, record protected local refs and base ancestry, store guard state under the Git common directory, and return JSON paths. Branch names are always new; no existing branch is reused. Pass `--protect <default-branch-name>` when a non-origin default is not otherwise discoverable or the selected base differs from that default. Never point the helper at existing user files.
+
+Separate worktree (Advanced, or a bridge-prepared task):
+
+```text
+python3 <skill>/scripts/git_guard.py start --repo <repo> --name <task-slug> --base <verified-base-ref>
+```
+
+By default the worktree is `~/workspace/worktrees/<repository-directory-name>/fix-code-<slug>-<unique-id>`, even when the source checkout is elsewhere. Optional `--worktree <new-path>` selects a destination outside and separate from the original checkout; the helper rejects destinations inside or above the source checkout. The original checkout is not touched.
+
+In place (Simple, or Medium before growth):
+
+```text
+python3 <skill>/scripts/git_guard.py start --repo <repo> --name <task-slug> --base <verified-base-ref> --in-place
+```
+
+Runs `git switch -c` in the existing main checkout. Preconditions: run from the main checkout root (not a linked worktree), tracked files clean, and no merge/rebase/cherry-pick/revert in progress. Otherwise it refuses; use the worktree form instead. Untracked files are left alone, but it also refuses when the switch to the base would overwrite or remove an untracked or ignored file (any file that differs between HEAD and the base, or a path under or above one). Move such files aside or use the worktree form. It records the original branch/head and the pre-existing untracked files in state.
+
+Medium growth, relocating an in-place task to a worktree after committing:
+
+```text
+python3 <skill>/scripts/git_guard.py relocate --state <state-json> [--worktree <new-path>]
+```
+
+Requires tracked files clean (commit first). Moves the task branch to a separate worktree and returns the original checkout to its original branch/head. Same destination rules as `start`. It refuses if new untracked, non-ignored files appeared since the task started ("commit or remove new task files first"), if the switch back would overwrite or remove untracked or ignored files, or if the original branch no longer exists; nothing is switched in these cases.
+
+After an in-place task's PR is created:
+
+```text
+python3 <skill>/scripts/git_guard.py restore --state <state-json>
+```
+
+Returns the checkout to its original branch/head and keeps the task branch. Same preconditions and refusals as `relocate`.
+
+If the task later needs a worktree (for example, follow-up work after `restore`), run `relocate` on the restored state: it leaves the checkout alone, creates the worktree for the task branch, and updates the state. Then work in that worktree.
 
 Use the emitted paths in all later calls:
 
@@ -18,7 +52,7 @@ Use the emitted paths in all later calls:
 python3 <skill>/scripts/git_guard.py check --state <state-json>
 ```
 
-`check` requires the exact worktree/branch, protects existing default/base branch refs, and verifies the last checkpoint remains an ancestor of HEAD. It also rejects detached HEAD, merge/rebase/cherry-pick/revert operations in progress, changed origin routing, and linked task worktrees that disappeared. Run before and after commits and before publishing. Do not edit state to bypass a failure. The helper does not prohibit arbitrary Git commands; compliance with the skill's restrictions remains mandatory.
+`check` is used the same way for in-place and worktree tasks. It requires the exact task branch in the recorded workspace, protects existing default/base branch refs, and verifies the last checkpoint remains an ancestor of HEAD. It also rejects detached HEAD, merge/rebase/cherry-pick/revert operations in progress, changed origin routing, and linked task worktrees that disappeared. Run before and after commits and before publishing. Do not edit state to bypass a failure. The helper does not prohibit arbitrary Git commands; compliance with the skill's restrictions remains mandatory.
 
 Task work needs uncommitted changes from the original checkout only when the human explicitly identifies them as input. Do not silently copy the dirty tree; agree on a scoped transfer or leave it in place and report the dependency.
 

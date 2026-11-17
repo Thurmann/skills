@@ -83,10 +83,11 @@ export function loadConfig(filename = process.env.FIX_CODE_CONFIG || './config.j
   for (const runtime of ['codex', 'claude']) {
     const defaults = c.models?.[runtime];
     if (!defaults) { if (runtime === c.runtime) throw new Error(`models.${runtime} is required.`); continue; }
+    defaults.precheck ??= defaults.implementer;
     const allowed = c.allowedModels?.[runtime];
     if (!Array.isArray(allowed) || !allowed.length) throw new Error(`allowedModels.${runtime} is required.`);
     allowed.forEach(v => id(v, /^(?!-)[a-zA-Z0-9._:/-]+$/, 'model ID'));
-    for (const role of ['architect', 'implementer', 'reviewer']) if (!allowed.includes(defaults[role])) throw new Error(`${runtime}.${role} is not in its model allowlist.`);
+    for (const role of ['precheck', 'architect', 'implementer', 'reviewer']) if (!allowed.includes(defaults[role])) throw new Error(`${runtime}.${role} is not in its model allowlist.`);
   }
   c.configPath = configPath;
   return c;
@@ -95,8 +96,8 @@ export function resolveModels(config, runtime, overrides = {}, previous) {
   const defaults = previous || config.models[runtime];
   if (!defaults || !config.allowedModels[runtime]) throw new Error(`Runtime ${runtime} is not configured.`);
   const selected = {};
-  for (const role of ['architect', 'implementer', 'reviewer']) {
-    selected[role] = overrides[role] || overrides.all || defaults[role];
+  for (const role of ['precheck', 'architect', 'implementer', 'reviewer']) {
+    selected[role] = overrides[role] || overrides.all || (role === 'precheck' ? defaults.precheck || defaults.implementer : defaults[role]);
     if (!config.allowedModels[runtime].includes(selected[role])) throw new Error(`Model for ${role} is not allowlisted; update local configuration after validating runtime availability.`);
   }
   return selected;

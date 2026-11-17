@@ -41,8 +41,15 @@ test('example placeholders, arbitrary paths, and unknown default models fail bef
 
 test('per-role override wins over all-role override, while unsupported models fail closed', t => {
   const f = fixture(t); const config = loadConfig(f.save());
-  assert.deepEqual(resolveModels(config, 'codex', { all: 'cheap', architect: 'strong' }), { architect: 'strong', implementer: 'cheap', reviewer: 'cheap' });
+  assert.deepEqual(resolveModels(config, 'codex', { all: 'cheap', architect: 'strong' }), { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'cheap' });
   assert.throws(() => resolveModels(config, 'codex', { implementer: 'untrusted' }), /not allowlisted/);
+});
+
+test('precheck falls back to implementer, is allowlisted when explicit, and older tasks resolve it too', t => {
+  const f = fixture(t);
+  assert.equal(loadConfig(f.save()).models.codex.precheck, 'cheap');
+  assert.equal(resolveModels(loadConfig(f.save()), 'codex', {}, { architect: 'strong', implementer: 'cheap', reviewer: 'strong' }).precheck, 'cheap');
+  f.config.models.codex.precheck = 'untrusted'; assert.throws(() => loadConfig(f.save()), /model allowlist/);
 });
 
 test('channel routing needs no aliases and normalizes repository discovery settings', t => {

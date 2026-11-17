@@ -18,6 +18,20 @@ test('parses run and followup options only before the delimiter', () => {
   });
 });
 
+test('parses mode and precheck_model on run and followup', () => {
+  assert.deepEqual(parseCommand('<@U123ABC> run repo=demo mode=medium precheck_model=cheap -- build it', BOT), {
+    command: 'run', repo: 'demo', mode: 'medium', models: { precheck: 'cheap' }, request: 'build it',
+  });
+  assert.deepEqual(parseCommand('<@U123ABC> followup mode=advanced precheck_model=cheap -- continue', BOT), {
+    command: 'followup', mode: 'advanced', models: { precheck: 'cheap' }, request: 'continue',
+  });
+});
+
+test('rejects invalid and duplicate mode values', () => {
+  assert.throws(() => parseCommand('<@U123ABC> run repo=x mode=expert -- do it', BOT), /mode must be simple, medium, or advanced/);
+  assert.throws(() => parseCommand('<@U123ABC> followup mode=simple mode=simple -- do it', BOT), /Duplicate option: mode/);
+});
+
 test('channel routing can omit the repo option while preserving model options and inert request text', () => {
   assert.throws(() => parseCommand('<@U123ABC> run -- build it', BOT), /requires repo/);
   assert.deepEqual(parseCommand('<@U123ABC> run model=small reviewer_model=strong -- implement using repo=evil model=ignored', BOT, { requireRepo: false }), {
