@@ -28,13 +28,17 @@ async function doctor(config, override) {
   };
   await check('fix-code skill', async () => { if (!fs.existsSync(path.join(config.skillPath, 'SKILL.md'))) throw new Error('Skill missing.'); });
   await check('Python Git helper', () => command(config.pythonPath, [path.join(config.skillPath, 'scripts/git_guard.py'), '--help']));
-  let selected;
-  await check('default runtime selection', async () => { selected = await selectDefaultRuntime(config, { override, isAvailable: available(config) }); checks.push({ check: `selected runtime: ${selected}`, ok: true }); });
-  const pinned = override || (config.runtimeExplicit ? config.runtime : undefined);
+  // Only one usable provider is needed; the others are informational.
+  const usable = [];
   for (const runtime of Object.keys(config.runtimes)) {
-    const required = runtime === (selected ?? pinned);
-    for (const { name, args } of getProvider(runtime).doctorChecks()) await check(`${runtime} ${name}`, () => command(config.runtimes[runtime].path, args), required);
+    let ok = true;
+    for (const { name, args } of getProvider(runtime).doctorChecks()) await check(`${runtime} ${name}`, () => command(config.runtimes[runtime].path, args).catch(error => { ok = false; throw error; }), false);
+    if (ok) usable.push(runtime);
   }
+  if (override) checks.push(usable.includes(override) ? { check: `requested runtime ${override}`, ok: true } : { check: `requested runtime ${override}`, ok: false, reason: `Runtime ${override} is not configured or not usable on this host.` });
+  else checks.push(usable.length ? { check: 'at least one provider usable', ok: true, usable } : { check: 'at least one provider usable', ok: false, reason: 'No configured provider CLI is usable on this host.' });
+  try { checks.push({ check: `default runtime: ${await selectDefaultRuntime(config, { override, isAvailable: async name => usable.includes(name) })}`, ok: true }); }
+  catch (error) { if (!override && usable.length) checks.push({ check: 'default runtime', ok: true, warning: `${error.message} start will fail unless you pass --runtime ${usable.join('|')} or change "runtime" in config.json.` }); }
   await check('GitHub CLI authentication', () => command(config.ghPath, ['auth', 'status']));
   for (const [alias, repo] of Object.entries(config.repositories)) await check(`repository ${alias}`, () => validateRepository(repo));
   checks.push({ check: 'Slack bot token configured', ok: /^xoxb-/.test(process.env.SLACK_BOT_TOKEN || '') });

@@ -139,7 +139,7 @@ npm start
 node src/cli.js start --runtime gemini   # optional: override the default runtime for this run
 ```
 
-`doctor` checks local tools/authentication (every configured provider CLI, so delete providers you do not use from `runtimes`) and reports which default runtime would be selected. A missing CLI for a provider that is not the selected runtime is reported as `unavailable` but does not fail the check; the selected runtime (and its login check, for Codex) must pass, the skill/helper, repository routing, and presence of token-shaped values. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
+`doctor` checks local tools/authentication and reports which default runtime would be selected. Only **one** configured provider needs to be usable (its CLI answers `--version`, plus `login status` for Codex); missing ones are reported as `unavailable` and do not fail the check. With `doctor --runtime <name>`, that provider must be usable. If an explicit `"runtime"` in `config.json` is not usable, doctor shows a warning, because `start` would then need `--runtime`. It also checks the skill/helper, repository routing, and presence of token-shaped values. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
 
 Leave the terminal open and keep the host awake/online. To keep a plugged-in Mac available for a supervised session, you can run the start command under `caffeinate`:
 

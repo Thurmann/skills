@@ -148,3 +148,14 @@ test('selectDefaultRuntime honors override, explicit runtime, then priority amon
   assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['claude', 'codex']) }), 'codex');
   await assert.rejects(selectDefaultRuntime(c, { isAvailable: up(['claude']) }), /not available/);
 });
+
+test('selectDefaultRuntime falls through the whole priority list when no runtime is chosen', async t => {
+  const f = fixture(t); delete f.config.runtime;
+  const roles = model => ({ precheck: model, architect: model, implementer: model, reviewer: model });
+  f.config.runtimes = { claude: { models: claudeModels, allowedModels: ['opus', 'sonnet'] }, gemini: { models: roles('flash'), allowedModels: ['flash'] }, opencode: { models: roles('a/b'), allowedModels: ['a/b'] } };
+  const c = loadConfig(f.save());
+  const up = names => async name => names.includes(name);
+  assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['gemini', 'opencode']) }), 'gemini');
+  assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['opencode']) }), 'opencode');
+  assert.deepEqual(c.availableRuntimes, ['opencode']);
+});
