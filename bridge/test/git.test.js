@@ -71,7 +71,8 @@ async function fixture(t, { labels = '[{"name":"bug"}]', labelsFail = false } = 
 import fs from 'node:fs';
 const args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(args)+'\\n');
 if(args[0]==='pr'&&args[1]==='list') console.log(fs.existsSync(${JSON.stringify(ghState)})?fs.readFileSync(${JSON.stringify(ghState)},'utf8'):'[]');
-else if(args[0]==='pr'&&args[1]==='create') { const value=k=>args[args.indexOf(k)+1]; const pr=[{number:1,url:'https://github.com/example/app/pull/1',state:'OPEN',isDraft:true,baseRefName:value('--base'),headRefName:value('--head')}];fs.writeFileSync(${JSON.stringify(ghState)},JSON.stringify(pr));fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(['createbody',fs.readFileSync(args[args.indexOf('--body-file')+1],'utf8')])+'\\n');console.log(pr[0].url); }
+else if(args[0]==='pr'&&args[1]==='create') { const value=k=>args[args.indexOf(k)+1]; const pr=[{number:1,url:'https://github.com/example/app/pull/1',state:'OPEN',isDraft:args.includes('--draft'),baseRefName:value('--base'),headRefName:value('--head')}];fs.writeFileSync(${JSON.stringify(ghState)},JSON.stringify(pr));fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(['createbody',fs.readFileSync(args[args.indexOf('--body-file')+1],'utf8')])+'\\n');console.log(pr[0].url); }
+else if(args[0]==='pr'&&args[1]==='ready') { const pr=JSON.parse(fs.readFileSync(${JSON.stringify(ghState)},'utf8')); pr[0].isDraft=args.includes('--undo'); fs.writeFileSync(${JSON.stringify(ghState)},JSON.stringify(pr)); console.log('ok'); }
 else if(args[0]==='pr'&&args[1]==='comment') { const file=args[args.indexOf('--body-file')+1]; fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(['body',fs.readFileSync(file,'utf8')])+'\\n'); console.log('ok'); }
 else if(args[0]==='label'&&args[1]==='list') { if(fs.existsSync(${JSON.stringify(labelFail)})) process.exit(1); console.log(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); }
 else if(args[0]==='label'&&args[1]==='create') { const l=JSON.parse(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); l.push({name:args[2]}); fs.writeFileSync(${JSON.stringify(labelState)},JSON.stringify(l)); console.log('ok'); }
@@ -120,14 +121,14 @@ test('real isolated worktree and guarded publication use only explicit task ref 
   assert.ok(calls.some(a => a[0] === 'body' && a[1].includes('Followup verified.')));
   assert.ok(calls.find(a => a[0] === 'pr' && a[1] === 'create').includes('--draft'));
   const creates = calls.filter(a => a[0] === 'label' && a[1] === 'create');
-  assert.deepEqual(creates.map(a => a[2]), ['AI', 'fix-code']); // created once, on first publication only
+  assert.deepEqual(creates.map(a => a[2]), ['AI', 'fix-code', 'slack-bridge']); // created once, on first publication only
   assert.ok(creates.every(a => !a.includes('--force')));
-  assert.deepEqual(creates.map(a => a[a.indexOf('--color') + 1]), ['5319e7', '0e8a16']);
+  assert.deepEqual(creates.map(a => a[a.indexOf('--color') + 1]), ['5319e7', '0e8a16', '1d76db']);
   const prCreate = calls.find(a => a[0] === 'pr' && a[1] === 'create');
-  assert.equal(prCreate.join(' ').includes('--label AI --label fix-code'), true);
+  assert.equal(prCreate.join(' ').includes('--label AI --label fix-code --label slack-bridge'), true);
   const edits = calls.filter(a => a[0] === 'pr' && a[1] === 'edit');
   assert.equal(edits.length, 1);
-  assert.ok(edits[0].join(' ').includes('--add-label AI --add-label fix-code'));
+  assert.ok(edits[0].join(' ').includes('--add-label AI --add-label fix-code --add-label slack-bridge'));
   assert.ok(JSON.parse(fs.readFileSync(labelState, 'utf8')).some(l => l.name === 'bug'));
   const pushes = fs.readFileSync(gitLog, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(pushes.length, 2);
@@ -136,15 +137,47 @@ test('real isolated worktree and guarded publication use only explicit task ref 
   assert.equal(git(repo, 'status', '--porcelain'), statusBefore);
   const ready = JSON.parse(fs.readFileSync(ghState, 'utf8')); ready[0].isDraft = false;
   fs.writeFileSync(ghState, JSON.stringify(ready));
-  await assert.rejects(publishPR(config, task, 'Do not push ready PR.', artifacts), /no longer a draft/);
-  assert.equal(fs.readFileSync(gitLog, 'utf8').trim().split('\n').length, 2);
+  await publishPR(config, task, 'Ready PR is reused, not rejected.', artifacts);
+  assert.equal(fs.readFileSync(gitLog, 'utf8').trim().split('\n').length, 3);
+  assert.equal(JSON.parse(fs.readFileSync(ghState, 'utf8'))[0].isDraft, true); // default is draft: demoted
+});
+
+test('verified publication creates a PR without --draft', async t => {
+  const { task, config, artifacts, calls, ghState } = await fixture(t);
+  await publishPR(config, task, 'All verified.', artifacts, undefined, { draft: false });
+  assert.equal(calls().find(a => a[0] === 'pr' && a[1] === 'create').includes('--draft'), false);
+  assert.equal(JSON.parse(fs.readFileSync(ghState, 'utf8'))[0].isDraft, false);
+  assert.equal(calls().some(a => a[0] === 'createbody' && /is a draft/.test(a[1])), false);
+});
+
+test('incomplete verification creates a draft PR stating the reason', async t => {
+  const { task, config, artifacts, calls } = await fixture(t);
+  await publishPR(config, task, 'Partly verified.', artifacts, undefined, { draft: true, draftReason: 'integration suite unrunnable' });
+  assert.ok(calls().find(a => a[0] === 'pr' && a[1] === 'create').includes('--draft'));
+  assert.ok(calls().some(a => a[0] === 'createbody' && /draft because verification is incomplete: integration suite unrunnable/.test(a[1])));
+});
+
+test('existing ready PR is demoted with pr ready --undo when unverified, and promoted again when verified', async t => {
+  const { task, config, artifacts, calls, ghState } = await fixture(t);
+  await publishPR(config, task, 'First.', artifacts, undefined, { draft: false });
+  await publishPR(config, task, 'Second.', artifacts, undefined, { draft: true, draftReason: 'tests failing' });
+  let ready = calls().filter(a => a[0] === 'pr' && a[1] === 'ready');
+  assert.equal(ready.length, 1);
+  assert.ok(ready[0].includes('--undo') && ready[0].includes('--repo'));
+  assert.equal(JSON.parse(fs.readFileSync(ghState, 'utf8'))[0].isDraft, true);
+  assert.ok(calls().some(a => a[0] === 'body' && /tests failing/.test(a[1])));
+  await publishPR(config, task, 'Third.', artifacts, undefined, { draft: false });
+  ready = calls().filter(a => a[0] === 'pr' && a[1] === 'ready');
+  assert.equal(ready.length, 2);
+  assert.equal(ready[1].includes('--undo'), false);
+  assert.equal(JSON.parse(fs.readFileSync(ghState, 'utf8'))[0].isDraft, false);
 });
 
 test('an existing label is not re-created', async t => {
   const { task, config, artifacts, calls } = await fixture(t, { labels: '[{"name":"AI"},{"name":"bug"}]' });
   await publishPR(config, task, 'Verified.', artifacts);
-  assert.deepEqual(calls().filter(a => a[0] === 'label' && a[1] === 'create').map(a => a[2]), ['fix-code']);
-  assert.ok(calls().find(a => a[0] === 'pr' && a[1] === 'create').join(' ').includes('--label AI --label fix-code'));
+  assert.deepEqual(calls().filter(a => a[0] === 'label' && a[1] === 'create').map(a => a[2]), ['fix-code', 'slack-bridge']);
+  assert.ok(calls().find(a => a[0] === 'pr' && a[1] === 'create').join(' ').includes('--label AI --label fix-code --label slack-bridge'));
 });
 
 test('PR is still created without labels when label listing fails', async t => {

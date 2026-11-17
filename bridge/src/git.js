@@ -103,13 +103,16 @@ async function findPR(config, task, signal) {
 export async function checkExistingPR(config, task, signal) {
   const pr = await findPR(config, task, signal);
   if (pr && pr.state !== 'OPEN') throw new Error('This change already has a merged/closed PR. Start a new top-level Slack task for a fresh branch.');
-  if (pr && pr.isDraft !== true) throw new Error('This PR is no longer a draft. Return it to draft locally or start a new task before further changes.');
   return pr;
 }
 const PR_LABELS = [
   { name: 'AI', color: '5319e7', description: 'Created with AI assistance' },
-  { name: 'fix-code', color: '0e8a16', description: 'Created by the fix-code skill' }
+  { name: 'fix-code', color: '0e8a16', description: 'Created by the fix-code skill' },
+  { name: 'slack-bridge', color: '1d76db', description: 'Created via the fix-code Slack bridge' }
 ];
+const PR_LABEL_NAMES = PR_LABELS.map(label => label.name);
+const labelNamesText = `${PR_LABEL_NAMES.slice(0, -1).join(', ')} and ${PR_LABEL_NAMES.at(-1)}`;
+const labelArgs = flag => PR_LABEL_NAMES.flatMap(name => [flag, name]);
 // Best effort: create only missing labels (never --force); false on any error, without stderr.
 async function ensureLabels(config, task, signal) {
   try {
@@ -123,7 +126,7 @@ async function ensureLabels(config, task, signal) {
     return true;
   } catch { return false; }
 }
-export async function publishPR(config, task, result, outputDir, signal) {
+export async function publishPR(config, task, result, outputDir, signal, { draft = true, draftReason } = {}) {
   await guardCheck(config, task.guardState, signal);
   await validateRepository(task.repository, signal);
   if (!config.allowNetwork) throw new Error('Network publication is disabled in local configuration; the verified branch is preserved.');
@@ -134,23 +137,27 @@ export async function publishPR(config, task, result, outputDir, signal) {
   await command('git', ['push', task.repository.remote, `HEAD:refs/heads/${task.branch}`], { cwd: task.worktree, signal });
   await guardCheck(config, task.guardState, signal);
   let pr = existing;
-  const text = `This change addresses the authenticated Slack task ${task.id}.\n\n${result.slice(0, 12000)}\n\nBridge verification completed before publication; the mode and review outcome are stated above. Review the evidence and diff before merging.\n`;
+  const text = `This change addresses the authenticated Slack task ${task.id}.\n\n${result.slice(0, 12000)}\n\nBridge verification completed before publication; the mode and review outcome are stated above. Review the evidence and diff before merging.\n${draft ? `\nThis PR is a draft because verification is incomplete: ${draftReason || 'the implementer did not report complete verification'}.\n` : ''}`;
   if (existing) {
     // Followups reuse the PR, so publish this job's mode/review outcome as a comment.
     const note = path.join(outputDir, 'pull-request-update.md');
     fs.writeFileSync(note, text, { mode: 0o600 });
     await command(config.ghPath, ['pr', 'comment', String(existing.url || existing.number), '--repo', task.repository.github, '--body-file', note], { cwd: task.worktree, signal });
+    const ref = String(existing.url || existing.number);
+    if (draft && existing.isDraft !== true) await command(config.ghPath, ['pr', 'ready', ref, '--repo', task.repository.github, '--undo'], { cwd: task.worktree, signal });
+    else if (!draft && existing.isDraft === true) await command(config.ghPath, ['pr', 'ready', ref, '--repo', task.repository.github], { cwd: task.worktree, signal });
+    pr = await findPR(config, task, signal);
     if (await ensureLabels(config, task, signal)) {
-      await command(config.ghPath, ['pr', 'edit', String(existing.url || existing.number), '--repo', task.repository.github, '--add-label', 'AI', '--add-label', 'fix-code'], { cwd: task.worktree, signal }).catch(() => {});
+      await command(config.ghPath, ['pr', 'edit', String(existing.url || existing.number), '--repo', task.repository.github, ...labelArgs('--add-label')], { cwd: task.worktree, signal }).catch(() => {});
     }
   } else {
     const labeled = await ensureLabels(config, task, signal);
     const body = path.join(outputDir, 'pull-request.md');
-    fs.writeFileSync(body, labeled ? text : `${text}\nThe AI and fix-code labels could not be applied to this PR.\n`, { mode: 0o600 });
+    fs.writeFileSync(body, labeled ? text : `${text}\nThe ${labelNamesText} labels could not be applied to this PR.\n`, { mode: 0o600 });
     const title = `fix-code: ${task.initialRequest.split('\n')[0]}`.slice(0, 100);
-    await command(config.ghPath, ['pr', 'create', '--repo', task.repository.github, '--head', task.branch, '--base', task.repository.baseBranch, '--draft', '--title', title, '--body-file', body, ...(labeled ? ['--label', 'AI', '--label', 'fix-code'] : [])], { cwd: task.worktree, signal });
+    await command(config.ghPath, ['pr', 'create', '--repo', task.repository.github, '--head', task.branch, '--base', task.repository.baseBranch, ...(draft ? ['--draft'] : []), '--title', title, '--body-file', body, ...(labeled ? labelArgs('--label') : [])], { cwd: task.worktree, signal });
     pr = await findPR(config, task, signal);
   }
-  if (!pr || pr.state !== 'OPEN' || pr.isDraft !== true || !/^https:\/\/github\.com\//.test(pr.url)) throw new Error('PR creation could not be verified. Inspect the branch/forge before retrying.');
+  if (!pr || pr.state !== 'OPEN' || pr.isDraft !== draft || !/^https:\/\/github\.com\//.test(pr.url)) throw new Error('PR creation could not be verified. Inspect the branch/forge before retrying.');
   return pr.url;
 }

@@ -15,7 +15,7 @@ function fixture(t, options = {}) {
   t.after(() => store.close());
   const repository = { path: folder, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' };
   const config = { teamId: 'T123', allowedUsers: ['U123', 'U456'], allowedChannels: ['C123'], operators: [], runtime: 'codex', repositories: { app: repository }, stateDir: folder, skillPath: '/fixture/skill', allowNetwork: true, maxRepairRounds: 1, models: { codex: { precheck: 'cheap', architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] } };
-  const calls = [], posts = [], commands = [], published = [], state = { head: undefined, status: '', untracked: '' }; let publications = 0;
+  const calls = [], posts = [], commands = [], published = [], publishOptions = [], state = { head: undefined, status: '', untracked: '' }; let publications = 0;
   const runner = { async run(request) {
     calls.push(request);
     if (options.run) return options.run(request, calls);
@@ -25,10 +25,10 @@ function fixture(t, options = {}) {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
     async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'rev-list') return options.commits ?? '1\n'; if (args[0] === 'ls-files') return state.untracked; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
-    async publishPR(c, task, result) { publications++; published.push(result); return 'https://github.com/example/app/pull/1'; },
+    async publishPR(c, task, result, outputDir, signal, options) { publications++; published.push(result); publishOptions.push(options); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
-  return { folder, store, config, calls, posts, commands, published, state, bridge, publications: () => publications };
+  return { folder, store, config, calls, posts, commands, published, publishOptions, state, bridge, publications: () => publications };
 }
 function event(text = '<@UBOT> run repo=app -- fix the bug', overrides = {}) {
   return { team_id: 'T123', event_id: 'Ev1', event: { type: 'app_mention', user: 'U123', channel: 'C123', ts: '123.1', text, ...overrides } };
@@ -52,6 +52,23 @@ test('durable intake deduplicates events and executes strong/cheap/strong with o
   assert.match(f.posts[2].text, /finished with a draft PR[\s\S]*Precheck: advanced — because Predicted logic files: 2\.[\s\S]*Mode: advanced\./);
   assert.ok(f.posts.every(p => p.channel === 'C123' && p.thread_ts === '123.1'));
   assert.ok(f.posts.every(p => !p.text.includes('<@')));
+});
+
+test('PR draft policy follows the implementer VERIFICATION line', async t => {
+  const cases = [
+    ['all checks ran.\nVERIFICATION: complete', false, null, /finished with a PR ready for review[\s\S]*PR: ready for review\./],
+    ['ran some.\nVERIFICATION: incomplete: suite unrunnable', true, 'suite unrunnable', /finished with a draft PR[\s\S]*PR: draft \(suite unrunnable\)\./],
+    ['no verification line', true, 'implementer did not report complete verification', /finished with a draft PR[\s\S]*PR: draft \(implementer did not report/],
+    ['VERIFICATION: complete\nVERIFICATION: incomplete: later failure', true, 'later failure', /finished with a draft PR/]
+  ];
+  for (const [impl, draft, reason, text] of cases) {
+    const f = fixture(t, { run: modeRun(pre('simple'), impl) });
+    await f.bridge.receive(event()); await f.bridge.tick(); await f.bridge.flushOutbox();
+    assert.deepEqual(f.publishOptions, [{ draft, draftReason: reason }], impl);
+    assert.equal(f.store.listJobs()[0].draft, draft);
+    assert.match(f.posts.at(-1).text, text, impl);
+    assert.match(f.calls.find(c => c.phase === 'implementer').prompt, /VERIFICATION: complete/);
+  }
 });
 
 test('unauthorized/bot/cross-workspace/Slack Connect reports cause no job or response', async t => {
@@ -278,6 +295,8 @@ test('prompts read skill files per phase', async t => {
   const prompt = phase => f.calls.find(c => c.phase === phase).prompt;
   assert.doesNotMatch(prompt('precheck'), /Use the installed fix-code skill/);
   assert.doesNotMatch(prompt('precheck'), /SKILL\.md/);
+  assert.match(prompt('precheck'), /Read only the "Precheck" section of \/fixture\/skill\/references\/modes\.md/);
+  assert.doesNotMatch(prompt('precheck'), /Simple = 1-2 logic files/);
   assert.match(prompt('architect'), /references\/modes\.md.*references\/change-types\.md/);
   assert.match(prompt('implementer'), /git-and-pr\.md/);
   assert.match(prompt('reviewer'), /references\/modes\.md/);
