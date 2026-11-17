@@ -74,11 +74,13 @@ export async function prepareTask(config, task, signal) {
     const commonRaw = await command('git', ['rev-parse', '--git-common-dir'], { cwd: repo.path, signal });
     const common = path.resolve(repo.path, commonRaw);
     const folder = path.join(common, 'fix-code');
+    // The guard stores resolved paths; compare real paths so a symlinked worktrees root (such as macOS /var -> /private/var) still matches.
+    const realWorktree = fs.realpathSync(worktree);
     for (const filename of fs.existsSync(folder) ? fs.readdirSync(folder) : []) {
       if (!filename.endsWith('.json')) continue;
       const statePath = path.join(folder, filename);
       const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-      if (state.worktree === worktree && state.base_ref === repo.base) {
+      if (fs.existsSync(state.worktree) && fs.realpathSync(state.worktree) === realWorktree && state.base_ref === repo.base) {
         await guardCheck(config, statePath, signal);
         return { ...task, worktree, branch: state.branch, guardState: statePath, gitCommonDir: common, baseCommit: state.base_commit };
       }
