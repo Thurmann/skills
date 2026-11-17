@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, resolveModels, selectDefaultRuntime } from '../src/config.js';
+import { loadConfig, resolveModels, selectDefaultRuntime, findConfig, loadEnvBeside, configHome, bundledSkill } from '../src/config.js';
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-config-'));
@@ -158,4 +158,35 @@ test('selectDefaultRuntime falls through the whole priority list when no runtime
   assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['gemini', 'opencode']) }), 'gemini');
   assert.equal(await selectDefaultRuntime(c, { isAvailable: up(['opencode']) }), 'opencode');
   assert.deepEqual(c.availableRuntimes, ['opencode']);
+});
+
+test('findConfig prefers --config, FIX_CODE_CONFIG, ./config.json, then the user config directory', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-find-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cwd = path.join(root, 'cwd'), xdg = path.join(root, 'xdg'), env = { XDG_CONFIG_HOME: xdg };
+  fs.mkdirSync(cwd); fs.mkdirSync(path.join(xdg, 'fix-code-bridge'), { recursive: true });
+  assert.equal(configHome(env), path.join(xdg, 'fix-code-bridge'));
+  assert.throws(() => findConfig(undefined, env, cwd), /No config.json found. Looked in: .*cwd.*fix-code-bridge/);
+  fs.writeFileSync(path.join(xdg, 'fix-code-bridge', 'config.json'), '{}');
+  assert.equal(findConfig(undefined, env, cwd), path.join(xdg, 'fix-code-bridge', 'config.json'));
+  fs.writeFileSync(path.join(cwd, 'config.json'), '{}');
+  assert.equal(findConfig(undefined, env, cwd), path.join(cwd, 'config.json'));
+  assert.equal(findConfig(undefined, { ...env, FIX_CODE_CONFIG: 'other.json' }, cwd), path.join(cwd, 'other.json'));
+  assert.equal(findConfig('/x/explicit.json', { ...env, FIX_CODE_CONFIG: 'other.json' }, cwd), '/x/explicit.json');
+});
+
+test('loadEnvBeside reads the .env next to the config without overriding set variables', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-env-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configPath = path.join(dir, 'config.json');
+  assert.equal(loadEnvBeside(configPath, {}), null);
+  fs.writeFileSync(path.join(dir, '.env'), 'SLACK_BOT_TOKEN=xoxb-file\nSLACK_APP_TOKEN=xapp-file\n');
+  const env = { SLACK_BOT_TOKEN: 'xoxb-already-set' };
+  assert.equal(loadEnvBeside(configPath, env), path.join(dir, '.env'));
+  assert.deepEqual(env, { SLACK_BOT_TOKEN: 'xoxb-already-set', SLACK_APP_TOKEN: 'xapp-file' });
+});
+
+test('a config without skillPath uses the bundled skill', t => {
+  const f = fixture(t); delete f.config.skillPath;
+  assert.equal(loadConfig(f.save()).skillPath, bundledSkill);
 });

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { SocketModeClient } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
-import { loadConfig, selectDefaultRuntime } from './config.js';
+import { loadConfig, selectDefaultRuntime, configHome, findConfig, loadEnvBeside } from './config.js';
 import { Store } from './store.js';
 import { createRunner } from './runner.js';
 import { getProvider } from './providers/index.js';
@@ -101,18 +101,22 @@ async function main() {
   let runtimeOverride;
   if (runtimeIndex >= 0) { runtimeOverride = args[runtimeIndex + 1]; if (!runtimeOverride) throw new Error('--runtime needs a name.'); args.splice(runtimeIndex, 2); }
   if (action === 'help') {
-    console.log('Commands: init | doctor | start | status | outbox [retry <id> --confirmed-not-delivered]\nOptional: --config /path/to/config.json; --runtime <name> (start, doctor) overrides the default runtime. See README.md for Slack setup.'); return;
+    console.log('Commands: init | doctor | start | status | outbox [retry <id> --confirmed-not-delivered]\nOptional: --config /path/to/config.json (default: ./config.json, then ~/.config/fix-code-bridge/config.json); --runtime <name> (start, doctor) overrides the default runtime. See README.md for Slack setup.'); return;
   }
   if (action === 'init') {
-    for (const [source, destination] of [['config.example.json', 'config.json'], ['.env.example', '.env']]) {
-      const target = path.resolve(destination);
-      if (fs.existsSync(target)) { console.log(`Preserved existing ${destination}`); continue; }
+    const directory = filename ? path.dirname(path.resolve(filename)) : configHome();
+    mkdirPrivate(directory);
+    for (const [source, destination] of [['config.example.json', filename ? path.basename(filename) : 'config.json'], ['.env.example', '.env']]) {
+      const target = path.join(directory, destination);
+      if (fs.existsSync(target)) { console.log(`Preserved existing ${target}`); continue; }
       fs.writeFileSync(target, fs.readFileSync(path.join(project, source)), { flag: 'wx', mode: 0o600 });
-      console.log(`Created ${destination}; edit placeholders locally.`);
+      console.log(`Created ${target}; edit placeholders locally.`);
     }
     return;
   }
-  const config = loadConfig(filename);
+  const configPath = findConfig(filename);
+  loadEnvBeside(configPath);
+  const config = loadConfig(configPath);
   if (action === 'doctor') return doctor(config, runtimeOverride);
   if (action === 'start') return start(config, runtimeOverride);
   if (action === 'status' || action === 'outbox') {
