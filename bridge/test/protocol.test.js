@@ -61,8 +61,39 @@ test('rejects unknown, duplicate, misplaced, and invalid arguments', () => {
     '<@U123ABC> run repo=x model=-unsafe -- do it',
     '<@U123ABC> followup repo=x -- do it',
     '<@U123ABC> followup runtime=codex -- do it',
-    '<@U123ABC> status now',
   ]) assert.throws(() => parseCommand(text, BOT));
+});
+
+test('plain mentions without a command keyword are natural requests', () => {
+  assert.deepEqual(parseCommand('<@U123ABC> can you fix this small error: blabla', BOT), {
+    command: 'request', models: {}, request: 'can you fix this small error: blabla',
+  });
+  assert.deepEqual(parseCommand('<@U123ABC> run the linter and fix warnings', BOT), {
+    command: 'request', models: {}, request: 'run the linter and fix warnings',
+  });
+  assert.deepEqual(parseCommand('<@U123ABC> help me fix login', BOT), {
+    command: 'request', models: {}, request: 'help me fix login',
+  });
+  assert.deepEqual(parseCommand('<@U123ABC> status now', BOT), {
+    command: 'request', models: {}, request: 'status now',
+  });
+  assert.deepEqual(parseCommand('<@U123ABC> run the linter -- quickly', BOT), {
+    command: 'request', models: {}, request: 'run the linter -- quickly',
+  });
+  assert.throws(() => parseCommand('<@U123ABC> followup repo=x', BOT), /requires \|/);
+  for (const command of ['run', 'followup']) assert.throws(() => parseCommand(`<@U123ABC> ${command}`, BOT), /requires \|/);
+  assert.deepEqual(parseCommand('<@U123ABC> please use mode=simple and model=x', BOT), {
+    command: 'request', models: {}, request: 'please use mode=simple and model=x',
+  });
+  assert.throws(() => parseCommand(`<@U123ABC> ${'x'.repeat(16001)}`, BOT), /16000/);
+});
+
+test('bare status, help, cancel, retry remain commands and structured run keeps options', () => {
+  for (const command of ['status', 'help', 'cancel', 'retry']) assert.deepEqual(parseCommand(`<@${BOT}> ${command}`, BOT), { command });
+  assert.deepEqual(parseCommand('<@U123ABC> run mode=simple | x', BOT, { requireRepo: false }), {
+    command: 'run', mode: 'simple', models: {}, request: 'x',
+  });
+  assert.throws(() => parseCommand('<@U123ABC> run mode=bogus | x', BOT, { requireRepo: false }), /mode must be simple, medium, or advanced/);
 });
 
 test('accepts |, em dash and en dash as the separator like --', () => {
@@ -82,10 +113,12 @@ test('keeps later separator-like text inside the request verbatim', () => {
 test('does not treat dashes inside words or a colon as the separator', () => {
   assert.throws(() => parseCommand('<@U123ABC> run repo=demo foo\u2014bar', BOT), /requires \|/);
   assert.throws(() => parseCommand('<@U123ABC> run repo=demo mode=simple: fix', BOT), /requires \|/);
+  assert.throws(() => parseCommand('<@U123ABC> run repo=demo mode=simple | ', BOT), /cannot be empty/);
 });
 
 test('rejects missing, empty, and oversized requests', () => {
   assert.throws(() => parseCommand('<@U123ABC> run repo=x', BOT), /requires \|/);
+  assert.throws(() => parseCommand('<@U123ABC> followup repo=x | ', BOT), /cannot be empty/);
   assert.throws(() => parseCommand('<@U123ABC> run repo=x --   ', BOT), /cannot be empty/);
   assert.throws(() => parseCommand(`<@U123ABC> run repo=x -- ${'x'.repeat(16001)}`, BOT), /16000/);
   assert.throws(() => parseCommand(`<@U123ABC> ${'x'.repeat(16513)}`, BOT), /16512/);

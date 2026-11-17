@@ -3,6 +3,8 @@ const FORBIDDEN_INPUT_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\
 const ANSI = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g;
 const MAX_REQUEST = 16000;
 const MAX_INPUT = 16512;
+// `|` is preferred; `--`, em dash and en dash survive Slack/phone autocorrect.
+const SEPARATOR = /(?:^|\s)(?:\||--|—|–)(?=\s)/;
 
 export function safeText(value, maxLength = 4000) {
   const clean = String(value ?? '').replace(ANSI, '').replace(CONTROL, '');
@@ -47,9 +49,14 @@ function parseModels(options, allowRepo, allowRuntime) {
   return parsed;
 }
 
+function naturalRequest(commandText) {
+  const request = commandText.trim();
+  if (request.length > MAX_REQUEST) fail(`Request exceeds ${MAX_REQUEST} characters`);
+  return { command: 'request', models: {}, request };
+}
+
 function requestParts(rest, command) {
-  // `|` is preferred; `--`, em dash and en dash survive Slack/phone autocorrect.
-  const delimiter = /(?:^|\s)(?:\||--|—|–)(?=\s)/.exec(rest);
+  const delimiter = SEPARATOR.exec(rest);
   if (!delimiter) fail(`${command} requires | followed by a request`);
   const optionsText = rest.slice(0, delimiter.index).trim();
   const request = rest.slice(delimiter.index + delimiter[0].length).trim();
@@ -58,7 +65,7 @@ function requestParts(rest, command) {
   return { options: optionsText ? optionsText.split(/\s+/) : [], request };
 }
 
-/** Parse a bot mention command. Returns null for ordinary non-command messages. */
+/** Parse a bot mention. Returns null for ordinary messages; plain text without a command keyword becomes a `request`. */
 export function parseCommand(text, botUserId, options = {}) {
   if (typeof text !== 'string') return null;
   if (text.length > MAX_INPUT) fail(`Command exceeds ${MAX_INPUT} characters`);
@@ -80,13 +87,17 @@ export function parseCommand(text, botUserId, options = {}) {
   const rest = firstSpace < 0 ? '' : commandText.slice(firstSpace).trimStart();
 
   if (command === 'run' || command === 'followup') {
+    if (!rest) fail(`${command} requires | followed by a request`);
+    // Structured only when the text before the separator starts with an option (or is empty).
+    const delimiter = SEPARATOR.exec(rest);
+    const first = (delimiter ? rest.slice(0, delimiter.index) : rest).trim().split(/\s+/)[0];
+    if (first && !/^[a-z_]+=/.test(first)) return naturalRequest(commandText);
     const { options: argumentsList, request } = requestParts(rest, command);
     const parsed = parseModels(argumentsList, command === 'run', command === 'run');
     if (command === 'run' && options.requireRepo !== false && !parsed.repo) fail('run requires repo=<alias>');
     return { command, ...(parsed.repo ? { repo: parsed.repo } : {}), ...(parsed.runtime ? { runtime: parsed.runtime } : {}), ...(parsed.mode ? { mode: parsed.mode } : {}), models: parsed.models, request };
   }
-  if (!['status', 'cancel', 'retry', 'help'].includes(command)) fail(`Unknown command: ${command}`);
-  if (rest) fail(`${command} does not accept arguments`);
+  if (!['status', 'cancel', 'retry', 'help'].includes(command) || rest) return naturalRequest(commandText);
   return { command };
 }
 
