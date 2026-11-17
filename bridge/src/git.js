@@ -100,6 +100,23 @@ export async function checkExistingPR(config, task, signal) {
   if (pr && pr.isDraft !== true) throw new Error('This PR is no longer a draft. Return it to draft locally or start a new task before further changes.');
   return pr;
 }
+const PR_LABELS = [
+  { name: 'AI', color: '5319e7', description: 'Created with AI assistance' },
+  { name: 'fix-code', color: '0e8a16', description: 'Created by the fix-code skill' }
+];
+// Best effort: create only missing labels (never --force); false on any error, without stderr.
+async function ensureLabels(config, task, signal) {
+  try {
+    const repo = task.repository.github;
+    const existing = JSON.parse(await command(config.ghPath, ['label', 'list', '--repo', repo, '--json', 'name', '--limit', '1000'], { cwd: task.worktree, signal }));
+    const names = new Set(existing.map(label => label.name));
+    for (const label of PR_LABELS) {
+      if (names.has(label.name)) continue;
+      await command(config.ghPath, ['label', 'create', label.name, '--repo', repo, '--color', label.color, '--description', label.description], { cwd: task.worktree, signal });
+    }
+    return true;
+  } catch { return false; }
+}
 export async function publishPR(config, task, result, outputDir, signal) {
   await guardCheck(config, task.guardState, signal);
   await validateRepository(task.repository, signal);
@@ -117,11 +134,15 @@ export async function publishPR(config, task, result, outputDir, signal) {
     const note = path.join(outputDir, 'pull-request-update.md');
     fs.writeFileSync(note, text, { mode: 0o600 });
     await command(config.ghPath, ['pr', 'comment', String(existing.url || existing.number), '--repo', task.repository.github, '--body-file', note], { cwd: task.worktree, signal });
+    if (await ensureLabels(config, task, signal)) {
+      await command(config.ghPath, ['pr', 'edit', String(existing.url || existing.number), '--repo', task.repository.github, '--add-label', 'AI', '--add-label', 'fix-code'], { cwd: task.worktree, signal }).catch(() => {});
+    }
   } else {
+    const labeled = await ensureLabels(config, task, signal);
     const body = path.join(outputDir, 'pull-request.md');
-    fs.writeFileSync(body, text, { mode: 0o600 });
+    fs.writeFileSync(body, labeled ? text : `${text}\nThe AI and fix-code labels could not be applied to this PR.\n`, { mode: 0o600 });
     const title = `fix-code: ${task.initialRequest.split('\n')[0]}`.slice(0, 100);
-    await command(config.ghPath, ['pr', 'create', '--repo', task.repository.github, '--head', task.branch, '--base', task.repository.baseBranch, '--draft', '--title', title, '--body-file', body], { cwd: task.worktree, signal });
+    await command(config.ghPath, ['pr', 'create', '--repo', task.repository.github, '--head', task.branch, '--base', task.repository.baseBranch, '--draft', '--title', title, '--body-file', body, ...(labeled ? ['--label', 'AI', '--label', 'fix-code'] : [])], { cwd: task.worktree, signal });
     pr = await findPR(config, task, signal);
   }
   if (!pr || pr.state !== 'OPEN' || pr.isDraft !== true || !/^https:\/\/github\.com\//.test(pr.url)) throw new Error('PR creation could not be verified. Inspect the branch/forge before retrying.');

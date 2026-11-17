@@ -7,16 +7,18 @@ Use the active runtime's actual model/tool schema or supported-model listing. Ch
 1. Parse explicit human overrides first. Then use any project-scoped fix-code role preferences. Otherwise choose the defaults below.
 2. Architect/reviewer: highest reasoning capability appropriate to the task while considering standard-speed latency and price. Prefer an efficient frontier coding/reasoning model; reserve an exceptionally expensive tier for work that demonstrably needs it. Start with moderate reasoning and raise effort for difficult architecture or diagnosis.
 3. Implementer: the lowest verified effective token price among available models capable of the required coding and tools. Use current published prices or runtime-provided cost tiers where available; include cache behavior when known. If prices are unavailable, use the runtime's documented low-cost coding tier and disclose that the absolute cheapest rate was not established. Never fabricate a model identifier or price.
-4. Precheck: the cheapest efficient model at low effort. The same tier as the implementer is the usual choice.
+4. Precheck: inline for named modes, plainly trivial requests, or a cheap caller (see [modes](modes.md)); otherwise the cheapest efficient model at low effort. The same tier as the implementer is the usual choice.
 5. Report the actual models and efforts once before work; note substitutions. Check provider-specific effort compatibility.
 
 ## Roles by mode
 
 | Mode | Precheck | Architect | Implementer | Reviewer |
 | --- | --- | --- | --- | --- |
-| Simple | cheapest, low effort | none | one agent, cheapest efficient model | none |
-| Medium | cheapest, low effort | optional, for bounded diagnosis only | cheap subagents per subtask | only when the diff exceeds the precheck prediction |
-| Advanced | cheapest, low effort | required, plans before edits | cheap subagents per unit | required, fresh architect-class instance |
+| Simple | inline or cheapest, low effort | none | one agent, cheapest efficient model | none |
+| Medium | inline or cheapest, low effort | optional, for bounded diagnosis only | cheap subagents per subtask | only when the diff exceeds the precheck prediction |
+| Advanced | inline or cheapest, low effort | required, plans before edits | cheap subagents per unit | required, fresh architect-class instance |
+
+Precheck runs inline for named modes, plainly trivial requests, or a cheap caller; otherwise it uses the cheapest efficient model at low effort. See [modes](modes.md).
 
 For Simple, "cheapest efficient" means the least expensive model that still completes small coding edits reliably with the required tools. Do not pick a model so weak that it needs repeated retries. In Claude Code, this is normally the `haiku` alias for the precheck and Simple, and for Medium/Advanced implementers unless a unit needs more capability. The strongest efficient Claude model fills the architect and reviewer roles. Validate aliases against the runtime as usual.
 

@@ -49,7 +49,7 @@ test('explicit base fetch ignores custom mappings that would advance a user bran
   assert.equal(git(checkout, 'branch', '--show-current'), 'user-work');
 });
 
-test('real isolated worktree and guarded publication use only explicit task ref and reuse its PR', async t => {
+async function fixture(t, { labels = '[{"name":"bug"}]', labelsFail = false } = {}) {
   assert.ok(fs.existsSync(path.join(skillPath, 'scripts/git_guard.py')), 'Installed skill is required for integration test');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-git-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -64,13 +64,21 @@ test('real isolated worktree and guarded publication use only explicit task ref 
   const artifacts = path.join(root, 'artifacts'); fs.mkdirSync(artifacts);
   const ghState = path.join(root, 'gh-state.json');
   const ghLog = path.join(root, 'gh-log.jsonl'); const gitLog = path.join(root, 'git-pushes.jsonl');
+  const labelState = path.join(root, 'labels.json'); fs.writeFileSync(labelState, labels);
+  const labelFail = path.join(root, 'labels-fail'); if (labelsFail) fs.writeFileSync(labelFail, '');
   const ghPath = path.join(root, 'gh-fixture.mjs');
   fs.writeFileSync(ghPath, `#!/usr/bin/env node
 import fs from 'node:fs';
 const args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(args)+'\\n');
 if(args[0]==='pr'&&args[1]==='list') console.log(fs.existsSync(${JSON.stringify(ghState)})?fs.readFileSync(${JSON.stringify(ghState)},'utf8'):'[]');
-else if(args[0]==='pr'&&args[1]==='create') { const value=k=>args[args.indexOf(k)+1]; const pr=[{number:1,url:'https://github.com/example/app/pull/1',state:'OPEN',isDraft:true,baseRefName:value('--base'),headRefName:value('--head')}];fs.writeFileSync(${JSON.stringify(ghState)},JSON.stringify(pr));console.log(pr[0].url); }
+else if(args[0]==='pr'&&args[1]==='create') { const value=k=>args[args.indexOf(k)+1]; const pr=[{number:1,url:'https://github.com/example/app/pull/1',state:'OPEN',isDraft:true,baseRefName:value('--base'),headRefName:value('--head')}];fs.writeFileSync(${JSON.stringify(ghState)},JSON.stringify(pr));fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(['createbody',fs.readFileSync(args[args.indexOf('--body-file')+1],'utf8')])+'\\n');console.log(pr[0].url); }
 else if(args[0]==='pr'&&args[1]==='comment') { const file=args[args.indexOf('--body-file')+1]; fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(['body',fs.readFileSync(file,'utf8')])+'\\n'); console.log('ok'); }
+else if(args[0]==='label'&&args[1]==='list') { if(fs.existsSync(${JSON.stringify(labelFail)})) process.exit(1); console.log(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); }
+else if(args[0]==='label'&&args[1]==='create') { const l=JSON.parse(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); l.push({name:args[2]}); fs.writeFileSync(${JSON.stringify(labelState)},JSON.stringify(l)); console.log('ok'); }
+else if(args[0]==='pr'&&args[1]==='edit') console.log('ok');
+else if(args[0]==='label'&&args[1]==='list') { if(fs.existsSync(${JSON.stringify(labelFail)})) process.exit(1); console.log(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); }
+else if(args[0]==='label'&&args[1]==='create') { const l=JSON.parse(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); l.push({name:args[2]}); fs.writeFileSync(${JSON.stringify(labelState)},JSON.stringify(l)); console.log('ok'); }
+else if(args[0]==='pr'&&args[1]==='edit') console.log('ok');
 else process.exitCode=1;
 `, { mode: 0o700 });
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
@@ -95,16 +103,32 @@ const result=spawnSync('/usr/bin/git',args,{stdio:'inherit'});process.exit(resul
   const reconciled = await prepareTask(config, { id: task.id, repository: task.repository });
   assert.equal(reconciled.branch, task.branch);
   config.allowNetwork = true; // Only the fixture git shim handles push; no real network.
+  const calls = () => fs.readFileSync(ghLog, 'utf8').trim().split('\n').map(JSON.parse);
+  return { root, repo, task, config, artifacts, ghState, ghLog, gitLog, mainBefore, statusBefore, calls, labelState };
+}
+
+test('real isolated worktree and guarded publication use only explicit task ref and reuse its PR', async t => {
+  const { repo, task, config, artifacts, ghState, gitLog, mainBefore, statusBefore, calls: readCalls, labelState } = await fixture(t);
   const first = await publishPR(config, task, 'Regression check passed.', artifacts);
   const second = await publishPR(config, task, 'Followup verified.', artifacts);
   assert.equal(first, second);
-  const calls = fs.readFileSync(ghLog, 'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(calls.filter(a => a[1] === 'create').length, 1);
+  const calls = readCalls();
+  assert.equal(calls.filter(a => a[0] === 'pr' && a[1] === 'create').length, 1);
   const comments = calls.filter(a => a[0] === 'pr' && a[1] === 'comment');
   assert.equal(comments.length, 1); // posted on reuse only, not on creation
   assert.ok(comments[0].includes('--body-file') && comments[0].includes('--repo'));
   assert.ok(calls.some(a => a[0] === 'body' && a[1].includes('Followup verified.')));
-  assert.ok(calls.find(a => a[1] === 'create').includes('--draft'));
+  assert.ok(calls.find(a => a[0] === 'pr' && a[1] === 'create').includes('--draft'));
+  const creates = calls.filter(a => a[0] === 'label' && a[1] === 'create');
+  assert.deepEqual(creates.map(a => a[2]), ['AI', 'fix-code']); // created once, on first publication only
+  assert.ok(creates.every(a => !a.includes('--force')));
+  assert.deepEqual(creates.map(a => a[a.indexOf('--color') + 1]), ['5319e7', '0e8a16']);
+  const prCreate = calls.find(a => a[0] === 'pr' && a[1] === 'create');
+  assert.equal(prCreate.join(' ').includes('--label AI --label fix-code'), true);
+  const edits = calls.filter(a => a[0] === 'pr' && a[1] === 'edit');
+  assert.equal(edits.length, 1);
+  assert.ok(edits[0].join(' ').includes('--add-label AI --add-label fix-code'));
+  assert.ok(JSON.parse(fs.readFileSync(labelState, 'utf8')).some(l => l.name === 'bug'));
   const pushes = fs.readFileSync(gitLog, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(pushes.length, 2);
   assert.ok(pushes.every(args => args.length === 3 && args[0] === 'push' && args[1] === 'origin' && args[2] === `HEAD:refs/heads/${task.branch}`));
@@ -114,4 +138,19 @@ const result=spawnSync('/usr/bin/git',args,{stdio:'inherit'});process.exit(resul
   fs.writeFileSync(ghState, JSON.stringify(ready));
   await assert.rejects(publishPR(config, task, 'Do not push ready PR.', artifacts), /no longer a draft/);
   assert.equal(fs.readFileSync(gitLog, 'utf8').trim().split('\n').length, 2);
+});
+
+test('an existing label is not re-created', async t => {
+  const { task, config, artifacts, calls } = await fixture(t, { labels: '[{"name":"AI"},{"name":"bug"}]' });
+  await publishPR(config, task, 'Verified.', artifacts);
+  assert.deepEqual(calls().filter(a => a[0] === 'label' && a[1] === 'create').map(a => a[2]), ['fix-code']);
+  assert.ok(calls().find(a => a[0] === 'pr' && a[1] === 'create').join(' ').includes('--label AI --label fix-code'));
+});
+
+test('PR is still created without labels when label listing fails', async t => {
+  const { task, config, artifacts, calls } = await fixture(t, { labelsFail: true });
+  await publishPR(config, task, 'Verified.', artifacts);
+  assert.equal(calls().some(a => a[0] === 'label' && a[1] === 'create'), false);
+  assert.equal(calls().find(a => a[0] === 'pr' && a[1] === 'create').includes('--label'), false);
+  assert.ok(calls().some(a => a[0] === 'createbody' && /labels could not be applied/.test(a[1])));
 });
