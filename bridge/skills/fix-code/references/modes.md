@@ -32,16 +32,18 @@ The precheck is a routing decision, not a design. Do not spend strong-model toke
 
 Optimized for speed and the lowest token usage.
 
+- Workspace: new branch in the existing checkout (in place), via `start --in-place`. No worktree.
 - One agent does the whole task in one pass: frame, isolate, edit, verify, commit, push, and open the PR. Use the cheapest efficient model that can use the required coding and Git tools. If the caller already is that model, it may do the work itself; otherwise delegate the whole task to one implementer with a self-contained brief.
 - No architect and no reviewer. No multi-agent fan-out and no persistent plan record.
 - Keep context small: read only the files needed, and skip broad exploration.
 - Verify with the narrowest check that proves the behavior, such as the targeted test, a build, or one CLI/UI check of the changed element.
-- **Escalate** to Medium (or Advanced if it qualifies) and report why if any of these appear: the change needs more than about 3 files, a new interface or dependency, a risk flag, a failing fix that is not obvious after one repair, or an unclear root cause. Keep the existing branch and commits; continue under the new mode's rules.
+- **Escalate** to Medium (or Advanced if it qualifies) and report why if any of these appear: the change needs more than about 3 files, a new interface or dependency, a risk flag, a failing fix that is not obvious after one repair, or an unclear root cause. Keep the existing branch and commits; continue under the new mode's rules. If the task is still in place, relocate it to a worktree first when escalating to Advanced, and also when escalating to Medium: an escalation trigger counts as "bigger than predicted" (see Mode changes).
 
 ## Medium
 
 Optimized for balancing cost and correctness.
 
+- Workspace: start in place. The coordinator watches for the reviewer rule's "bigger than predicted" triggers while working, not only at final review, and as soon as one fires it commits and `relocates` to a worktree, then continues (and runs the reviewer).
 - The coordinator writes a short plan itself: acceptance criteria, units of work, and checks. The architect is not required. Consult it only for a bounded diagnosis after two failed repairs with the same unresolved cause, or when the work escalates to Advanced.
 - Delegate each bounded subtask to cheap implementer subagents with exact files, worktree, branch, finish condition, and a runnable acceptance check. Keep one writer per branch at a time; parallelize only read-only exploration.
 - Verify each unit before starting the next, then run the changed flow end to end.
@@ -57,6 +59,8 @@ Optimized for balancing cost and correctness.
 
 Optimized for correctness. These rules are non-negotiable while the task is in Advanced mode; only an explicit human instruction may relax one, and the report must say so.
 
+- Workspace: always a separate worktree from the start.
+
 1. **Architect plans first.** Before any implementation edit, the architect role produces the plan: architecture or design decisions, interfaces, risks, staged units with acceptance checks, and the verification path. Keep this plan in a persistent task record in the worktree.
 2. **Cheap subagents implement.** Bounded units go to cheap, efficient implementer subagents, one writer per branch at a time. The coordinator and architect do not write bulk implementation. Each unit is verified before the next starts.
 3. **Independent review is mandatory.** A fresh reviewer subagent with an architect-class model inspects the full diff against the base, the plan, and the verification evidence. It must not be the same agent instance that wrote the plan or the code. Fix actionable findings on the task branch with new commits, rerun affected checks, and have the reviewer confirm the fixes. Do not open a non-draft PR before the review passes. If the review cannot run, open a draft PR and state the blocker.
@@ -64,6 +68,6 @@ Optimized for correctness. These rules are non-negotiable while the task is in A
 
 ## Mode changes
 
-- Escalation to a higher mode is always allowed. Announce it with the trigger and continue on the same branch; work already done counts but must satisfy the new mode's review rules.
+- Escalation to a higher mode is always allowed. Announce it with the trigger and continue on the same branch; work already done counts but must satisfy the new mode's review rules. Escalation to Advanced while the task is still in place: commit, `relocate` to a worktree, then continue. Simple-to-Medium escalation also relocates, since an escalation trigger counts as "bigger than predicted" under the Medium workspace rule; after that, Medium relocates on any further trigger only if still in place.
 - Never downgrade automatically. Only an explicit human instruction can lower the mode.
 - The final report states the precheck result, any escalation and its trigger, and whether a reviewer ran and why.
