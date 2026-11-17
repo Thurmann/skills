@@ -13,7 +13,7 @@ This bridge uses Slack Socket Mode, a durable SQLite queue, and a local coding C
 - GitHub CLI authenticated (`gh auth status`) with access to the repositories you want the bridge to use. Channel routing requires push permission for the selected repository.
 - A Slack workspace where the app can read public/private channel metadata, plus your allowed user/channel/workspace IDs.
 
-A snapshot of the `fix-code` skill is bundled under `skills/fix-code`. The runner reads it directly, so the bridge does not depend on a user-global skill installation. Point `skillPath` at another reviewed installation if desired. Changes to a global skill are not automatically synchronized into this snapshot. The bundled snapshot has been synced to the current `fix-code` skill version, which includes the simple/medium/advanced modes and the precheck; re-sync it manually when the global skill changes.
+The bridge reads the `fix-code` skill from this repository (`../skills/fix-code`, the same source that `scripts/install-skills.py` installs), so it never runs a stale private copy and does not depend on a user-global installation. Point `skillPath` at another reviewed installation if desired.
 
 ## 1. Install dependencies and initialize private configuration
 
@@ -24,7 +24,9 @@ npm ci
 node src/cli.js init
 ```
 
-`init` creates `.env` and `config.json` with private file permissions and preserves existing files. Both are Git-ignored. Edit them locally; never paste tokens into a chat or commit them.
+`init` creates `config.json` and `.env` in `~/.config/fix-code-bridge/` (or `$XDG_CONFIG_HOME/fix-code-bridge/`) with private permissions and preserves existing files. They live outside the repository, so updates and worktrees never touch them. Edit them locally; never paste tokens into a chat or commit them. `init --config /some/dir/config.json` creates them in another directory instead.
+
+Every command finds its configuration in this order: `--config <path>`, `FIX_CODE_CONFIG`, `./config.json` in the current directory (older setups), then `~/.config/fix-code-bridge/config.json`. The `.env` next to the chosen `config.json` is loaded automatically; variables already set in the environment (or by `npm start`'s `./.env`) win. Relative paths in `config.json`, such as `stateDir: "./state"`, resolve against the config file's directory, so state also lives in `~/.config/fix-code-bridge/state` by default. Without `skillPath`, the bridge uses the repository's `skills/fix-code` next to the code it runs from; set it (absolute, or relative to the config file) only to use another reviewed installation.
 
 ## 2. Create the Slack app
 
@@ -32,12 +34,11 @@ node src/cli.js init
 2. Paste/import `slack-app-manifest.json` from this project.
 3. Check that Socket Mode is enabled. Under **Basic Information → App-Level Tokens**, generate an app token with `connections:write`.
 4. Install the app into the workspace and copy its Bot User OAuth Token from **OAuth & Permissions**.
-5. Put the app token (`xapp-...`) and bot token (`xoxb-...`) into `.env` locally:
+5. Put the app token (`xapp-...`) and bot token (`xoxb-...`) into `~/.config/fix-code-bridge/.env` locally:
 
    ```dotenv
    SLACK_BOT_TOKEN=your-local-bot-token
    SLACK_APP_TOKEN=your-local-app-token
-   FIX_CODE_CONFIG=./config.json
    ```
 
 6. Invite the bot to a dedicated test channel. Select the actual bot when mentioning it, rather than typing an unlinked display name.
@@ -217,7 +218,7 @@ A merged/closed PR needs a new top-level task and a new branch. A PR marked read
 
 ## Execution and Git behavior
 
-One global worker runs at a time. Independent Slack tasks are queued, preventing simultaneous writers even across repositories. Each accepted task gets a unique isolated worktree using `skills/fix-code/scripts/git_guard.py`.
+One global worker runs at a time. Independent Slack tasks are queued, preventing simultaneous writers even across repositories. Each accepted task gets a unique isolated worktree using `../skills/fix-code/scripts/git_guard.py`.
 
 The original checkout, its dirty files, and protected branches remain outside the coding worktree. The guard checks the task branch, protected refs, base ancestry, remote routing, and history checkpoints. It detects violations; it is not a Git hook or a complete shell-security boundary. Do not authorize untrusted people to operate this local coding account.
 
@@ -255,7 +256,7 @@ Ctrl+C sends a graceful shutdown/cancel request. Do not delete worktrees or stat
 ```bash
 npm test
 npm run check
-python3 skills/fix-code/scripts/test_git_guard.py
+python3 ../skills/fix-code/scripts/test_git_guard.py
 ```
 
 Tests use fake Slack transports/model executables and disposable Git repositories. GitHub publication is replaced with a local fixture. No live Slack messages, model inference, or real PRs are needed for these checks. The Git integration fixture verifies the explicit push refspec and PR reuse, not a network push.

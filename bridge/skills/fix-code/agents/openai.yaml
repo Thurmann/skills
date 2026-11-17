@@ -1,3 +1,0 @@
-interface:
-  display_name: "Fix Code"
-  short_description: "Build and fix code on safe branches, then open PRs"

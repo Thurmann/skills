@@ -1,7 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { parseEnv } from 'node:util';
 import { DEFAULT_PRIORITY, providerNames } from './providers/index.js';
+
+export const defaultSkill = path.resolve(import.meta.dirname, '../../skills/fix-code');
+export const configHome =(env = process.env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'fix-code-bridge');
+/** Config lookup: --config, FIX_CODE_CONFIG, ./config.json, then the per-user config directory. */
+export function findConfig(filename, env = process.env, cwd = process.cwd()) {
+  if (filename || env.FIX_CODE_CONFIG) return path.resolve(cwd, filename || env.FIX_CODE_CONFIG);
+  const candidates = [path.resolve(cwd, 'config.json'), path.join(configHome(env), 'config.json')];
+  const found = candidates.find(file => fs.existsSync(file));
+  if (!found) throw new Error(`No config.json found. Looked in: ${candidates.join(', ')}. Run init or pass --config.`);
+  return found;
+}
+/** Load the .env beside the config; variables that are already set win. */
+export function loadEnvBeside(configPath, env = process.env) {
+  const file = path.join(path.dirname(configPath), '.env');
+  if (!fs.existsSync(file)) return null;
+  for (const [key, value] of Object.entries(parseEnv(fs.readFileSync(file, 'utf8')))) env[key] ??= value;
+  return file;
+}
 
 const id = (value, pattern, label) => {
   if (typeof value !== 'string' || !pattern.test(value)) throw new Error(`Invalid ${label}; replace example values in config.json.`);
@@ -12,8 +31,8 @@ const absolute = (value, directory) => {
   return path.resolve(directory, value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value);
 };
 const githubOwner = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
-export function loadConfig(filename = process.env.FIX_CODE_CONFIG || './config.json') {
-  const configPath = path.resolve(filename);
+export function loadConfig(filename) {
+  const configPath = findConfig(filename);
   const c = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const directory = path.dirname(configPath);
   id(c.teamId, /^T[A-Z0-9]+$/, 'Slack team ID');
@@ -30,7 +49,7 @@ export function loadConfig(filename = process.env.FIX_CODE_CONFIG || './config.j
   const names = providerNames();
   c.runtimeExplicit = Boolean(c.runtime);
   if (c.runtimeExplicit && !names.includes(c.runtime)) throw new Error(`runtime must be one of: ${names.join(', ')}.`);
-  c.skillPath = absolute(c.skillPath || './skills/fix-code', directory);
+  c.skillPath = c.skillPath ? absolute(c.skillPath, directory) : defaultSkill;
   if (!fs.existsSync(path.join(c.skillPath, 'SKILL.md')) || !fs.existsSync(path.join(c.skillPath, 'scripts/git_guard.py'))) throw new Error('The installed fix-code skill and Git helper are required.');
   c.stateDir = absolute(c.stateDir || './state', directory);
   c.timeoutMs ??= 1800000;

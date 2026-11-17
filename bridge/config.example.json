@@ -12,7 +12,6 @@
     "gemini",
     "opencode"
   ],
-  "skillPath": "./skills/fix-code",
   "stateDir": "./state",
   "pythonPath": "python3",
   "ghPath": "gh",
