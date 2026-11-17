@@ -65,8 +65,27 @@ test('rejects unknown, duplicate, misplaced, and invalid arguments', () => {
   ]) assert.throws(() => parseCommand(text, BOT));
 });
 
+test('accepts |, em dash and en dash as the separator like --', () => {
+  const expected = parseCommand('<@U123ABC> run repo=demo mode=simple -- fix the bug', BOT);
+  assert.deepEqual(expected, { command: 'run', repo: 'demo', mode: 'simple', models: {}, request: 'fix the bug' });
+  for (const sep of ['|', '\u2014', '\u2013']) {
+    assert.deepEqual(parseCommand(`<@U123ABC> run repo=demo mode=simple ${sep} fix the bug`, BOT), expected);
+  }
+});
+
+test('keeps later separator-like text inside the request verbatim', () => {
+  assert.deepEqual(parseCommand('<@U123ABC> run repo=demo mode=simple | fix a|b -- c', BOT), {
+    command: 'run', repo: 'demo', mode: 'simple', models: {}, request: 'fix a|b -- c',
+  });
+});
+
+test('does not treat dashes inside words or a colon as the separator', () => {
+  assert.throws(() => parseCommand('<@U123ABC> run repo=demo foo\u2014bar', BOT), /requires \|/);
+  assert.throws(() => parseCommand('<@U123ABC> run repo=demo mode=simple: fix', BOT), /requires \|/);
+});
+
 test('rejects missing, empty, and oversized requests', () => {
-  assert.throws(() => parseCommand('<@U123ABC> run repo=x', BOT), /requires --/);
+  assert.throws(() => parseCommand('<@U123ABC> run repo=x', BOT), /requires \|/);
   assert.throws(() => parseCommand('<@U123ABC> run repo=x --   ', BOT), /cannot be empty/);
   assert.throws(() => parseCommand(`<@U123ABC> run repo=x -- ${'x'.repeat(16001)}`, BOT), /16000/);
   assert.throws(() => parseCommand(`<@U123ABC> ${'x'.repeat(16513)}`, BOT), /16512/);

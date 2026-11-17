@@ -94,8 +94,8 @@ export class Bridge {
     if (!parsed) return { accepted: false };
     let task = this.store.getTask(id), previous;
     if (task && task.owner !== e.user && !c.operators.includes(e.user)) return { accepted: respond('Only this task’s owner or a configured operator can control it.') };
-    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code run -- describe the change (repository comes from this channel name).' : '@Fix Code run repo=app -- describe the change.') + ' In its thread: @Fix Code followup -- details, or status, cancel, retry. Options go before --: mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... New independent work needs a new top-level message.') };
-    if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with run -- <request> in channel mode, or run repo=<alias> -- <request> in legacy alias mode.') };
+    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code run | describe the change (repository comes from this channel name).' : '@Fix Code run repo=app | describe the change.') + ' In its thread: @Fix Code followup | details, or status, cancel, retry. Options go before |: mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... New independent work needs a new top-level message.') };
+    if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
     if (parsed.command === 'cancel') {
       if (!task) return { accepted: respond('No task is bound to this thread.') };
       if (this.store.getJob(this.active?.jobId)?.taskId === id) {
@@ -122,7 +122,7 @@ export class Bridge {
       try { models = resolveModels(c, runtime, parsed.models); } catch (error) { return { accepted: respond(safeError(error)) }; }
       task = { id, channel: e.channel, threadTs, owner: e.user, repositoryMode, repoAlias: parsed.repo || null, repository: repository ? { ...repository } : null, runtime, models, initialRequest: parsed.request, status: 'queued', created: time(), updated: time() };
     } else {
-      if (!task) return { accepted: respond('No task is bound to this thread. Start with run -- <request> in channel mode, or run repo=<alias> -- <request> in legacy alias mode.') };
+      if (!task) return { accepted: respond('No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
       if (!['followup', 'retry'].includes(parsed.command)) return { accepted: respond('Unsupported command.') };
       if (parsed.command === 'retry') {
         if (!terminal.has(task.status) || task.status === 'succeeded') return { accepted: respond('Retry applies only to failed, interrupted, or canceled tasks. Use followup for a correction.') };

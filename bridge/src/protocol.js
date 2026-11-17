@@ -48,8 +48,9 @@ function parseModels(options, allowRepo, allowRuntime) {
 }
 
 function requestParts(rest, command) {
-  const delimiter = /(?:^|\s)--(?=\s)/.exec(rest);
-  if (!delimiter) fail(`${command} requires -- followed by a request`);
+  // `|` is preferred; `--`, em dash and en dash survive Slack/phone autocorrect.
+  const delimiter = /(?:^|\s)(?:\||--|—|–)(?=\s)/.exec(rest);
+  if (!delimiter) fail(`${command} requires | followed by a request`);
   const optionsText = rest.slice(0, delimiter.index).trim();
   const request = rest.slice(delimiter.index + delimiter[0].length).trim();
   if (!request) fail('Request cannot be empty');
