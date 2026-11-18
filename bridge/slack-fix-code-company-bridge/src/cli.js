@@ -10,7 +10,7 @@ import { Store } from './store.js';
 import { createRunner } from './runner.js';
 import { getProvider, providerNames } from './providers/index.js';
 import { Bridge, processIdentity } from './bridge.js';
-import { command, validateRepository, configureGitHubAuth } from './git.js';
+import { command, validateRepository, configureGitHubAuth, checkGitHubTokenFile } from './git.js';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function mkdirPrivate(folder) { fs.mkdirSync(folder, { recursive: true, mode: 0o700 }); fs.chmodSync(folder, 0o700); }
@@ -49,7 +49,9 @@ async function doctor(config, override) {
   else checks.push(usable.length ? { check: 'at least one provider usable', ok: true, usable } : { check: 'at least one provider usable', ok: false, reason: 'No configured provider CLI is usable on this host.' });
   try { checks.push({ check: `default runtime: ${await selectDefaultRuntime(config, { override, isAvailable: async name => usable.includes(name) })}`, ok: true }); }
   catch (error) { if (!override && usable.length) checks.push({ check: 'default runtime', ok: true, warning: `${error.message} start will fail unless you pass --runtime ${usable.join('|')} or change "runtime" in config.json.` }); }
-  await check('GitHub CLI authentication', () => command(config.ghPath, ['auth', 'status']));
+  if (config.githubTokenFile) await check('GitHub token file', () => checkGitHubTokenFile(config.githubTokenFile, { maxAgeMs: config.githubAuth === 'app' ? 55 * 60000 : undefined }));
+  if (config.githubAuth === 'app') await check('GitHub App installation access', () => command(config.ghPath, ['api', '--hostname', 'github.com', '--method', 'GET', '/installation/repositories?per_page=1', '--jq', '.total_count']));
+  else await check('GitHub CLI authentication', () => command(config.ghPath, ['auth', 'status']));
   for (const [alias, repo] of Object.entries(config.repositories)) await check(`repository ${alias}`, () => validateRepository(repo));
   checks.push({ check: 'Slack bot token configured', ok: /^xoxb-/.test(process.env.SLACK_BOT_TOKEN || '') });
   checks.push({ check: 'Slack app token configured', ok: /^xapp-/.test(process.env.SLACK_APP_TOKEN || '') });
