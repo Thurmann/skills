@@ -6,7 +6,6 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Bridge, parsePrecheck, isLogicFile, logicLines, fastReview, readonlySnapshot, reviewJSON } from '../src/bridge.js';
 import { Store } from '../src/store.js';
-import { safeText } from '../src/protocol.js';
 
 function fixture(t, options = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-bridge-'));
@@ -30,6 +29,8 @@ function fixture(t, options = {}) {
   });
   return { folder, store, config, calls, posts, commands, published, publishOptions, state, bridge, publications: () => publications };
 }
+// What a reader sees: the formatted sections of an outbox entry or the blocks of a post, else the plain text.
+const shown = message => message.sections ? message.sections.map(s => s.mrkdwn ?? s.plain).join('\n') : message.blocks ? message.blocks.map(b => b.text.text).join('\n') : message.text;
 function event(text = '<@UBOT> run repo=app -- fix the bug', overrides = {}) {
   return { team_id: 'T123', event_id: 'Ev1', event: { type: 'app_mention', user: 'U123', channel: 'C123', ts: '123.1', text, ...overrides } };
 }
@@ -47,26 +48,27 @@ test('durable intake deduplicates events and executes strong/cheap/strong with o
   assert.match(f.calls[1].prompt, /Do not push or create a PR yourself/);
   await f.bridge.flushOutbox();
   assert.equal(f.posts.length, 3, 'only queued, acknowledgement and final result replies are posted');
-  assert.equal(f.posts[0].text, `Task ${accepted.taskId} queued. Provider: codex. Repository: example/app. Results will return in this thread.`);
-  assert.match(f.posts[1].text, /^Task \w+ started\. Mode: advanced\. Estimated time: about 20 min\. Status updates follow every 5 min until the result\.$/);
-  assert.match(f.posts[2].text, /finished with a draft PR[\s\S]*Precheck: advanced — because Predicted logic files: 2\.[\s\S]*Mode: advanced\./);
+  assert.equal(f.posts[0].text, `Task ${accepted.taskId} queued.`);
+  assert.equal(shown(f.posts[0]), `:hourglass: *Queued* · task \`${accepted.taskId}\`\nProvider: \`codex\`\nRepository: \`example/app\``);
+  assert.equal(shown(f.posts[1]), ':hourglass_flowing_sand: *Started*\nMode: `advanced`\nEstimate: about 20 min\nUpdates every 5 min');
+  assert.match(shown(f.posts[2]), /^:white_check_mark: \*<https:\/\/github\.com\/example\/app\/pull\/1\|PR #1>\* opened as draft\nBranch: `fix-code\/task`\nMode: `advanced`\nReview: passed\nLogic files: 2 predicted, 2 changed\n[\s\S]*Precheck: because/);
   assert.ok(f.posts.every(p => p.channel === 'C123' && p.thread_ts === '123.1'));
   assert.ok(f.posts.every(p => !p.text.includes('<@')));
 });
 
 test('PR draft policy follows the implementer VERIFICATION line', async t => {
   const cases = [
-    ['all checks ran.\nVERIFICATION: complete', false, null, /finished with a PR ready for review[\s\S]*PR: ready for review\./],
-    ['ran some.\nVERIFICATION: incomplete: suite unrunnable', true, 'suite unrunnable', /finished with a draft PR[\s\S]*PR: draft \(suite unrunnable\)\./],
-    ['no verification line', true, 'implementer did not report complete verification', /finished with a draft PR[\s\S]*PR: draft \(implementer did not report/],
-    ['VERIFICATION: complete\nVERIFICATION: incomplete: later failure', true, 'later failure', /finished with a draft PR/]
+    ['all checks ran.\nVERIFICATION: complete', false, null, /PR #1>\* ready for review\n(?![\s\S]*Draft because)/],
+    ['ran some.\nVERIFICATION: incomplete: suite unrunnable', true, 'suite unrunnable', /PR #1>\* opened as draft[\s\S]*\nDraft because: suite unrunnable/],
+    ['no verification line', true, 'implementer did not report complete verification', /opened as draft[\s\S]*\nDraft because: implementer did not report/],
+    ['VERIFICATION: complete\nVERIFICATION: incomplete: later failure', true, 'later failure', /opened as draft/]
   ];
   for (const [impl, draft, reason, text] of cases) {
     const f = fixture(t, { run: modeRun(pre('simple'), impl) });
     await f.bridge.receive(event()); await f.bridge.tick(); await f.bridge.flushOutbox();
     assert.deepEqual(f.publishOptions, [{ draft, draftReason: reason }], impl);
     assert.equal(f.store.listJobs()[0].draft, draft);
-    assert.match(f.posts.at(-1).text, text, impl);
+    assert.match(shown(f.posts.at(-1)), text, impl);
     assert.match(f.calls.find(c => c.phase === 'implementer').prompt, /VERIFICATION: complete/);
   }
 });
@@ -167,7 +169,7 @@ test('simple mode skips architect and reviewer and publishes with the outcome st
   assert.equal(job.mode, 'simple'); assert.equal(f.store.listTasks()[0].mode, 'simple');
   assert.match(f.calls[1].prompt, /Execution mode: simple/);
   assert.match(f.calls[1].prompt, /SCOPE_EXCEEDED/);
-  assert.match(f.store.listOutbox().at(-1).text, /Independent review: not required/);
+  assert.match(shown(f.store.listOutbox().at(-1)), /\nReview: not required\n/);
 });
 
 test('simple escalates to medium on SCOPE_EXCEEDED and then runs the reviewer', async t => {
@@ -177,7 +179,7 @@ test('simple escalates to medium on SCOPE_EXCEEDED and then runs the reviewer', 
   const job = f.store.listJobs()[0];
   assert.equal(job.mode, 'medium'); assert.equal(job.escalation.from, 'simple');
   assert.equal(f.publications(), 1);
-  assert.match(f.store.listOutbox().at(-1).text, /Independent review: passed/);
+  assert.match(shown(f.store.listOutbox().at(-1)), /\nReview: passed\n/);
 });
 
 test('simple escalates only when more than six logic files change', async t => {
@@ -262,7 +264,7 @@ test('explicit mode=medium always runs independent review', async t => {
   const f = fixture(t, { run: modeRun(pre('simple')) });
   await f.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await f.bridge.tick();
   assert.deepEqual(phases(f), ['implementer', 'reviewer']);
-  assert.match(f.store.listOutbox().at(-1).text, /Independent review: passed/);
+  assert.match(shown(f.store.listOutbox().at(-1)), /\nReview: passed\n/);
 });
 
 test('published result leads with the outcome even when implementer output is huge', async t => {
@@ -282,7 +284,7 @@ test('a request needing no code change succeeds with the answer and publishes no
   assert.equal(f.store.listJobs()[0].calibration.changed_files, 0);
   const posts = f.store.listOutbox();
   assert.equal(posts.length, 3);
-  assert.match(posts[2].text, /finished with no code changes; no PR was published\.\nPrecheck: simple — Not a code change\. Predicted logic files: unknown\.\nMode: simple\.\n2 \+ 2 = 4/);
+  assert.equal(shown(posts[2]), ':white_check_mark: *Finished with no code changes*\nNo PR was published.\nMode: `simple`\nPrecheck: Not a code change.\n2 + 2 = 4');
 });
 
 test('no new commits with uncommitted files still fails at publication', async t => {
@@ -297,26 +299,25 @@ test('failures report the precheck decision in the final message', async t => {
   await f.bridge.receive(event()); await f.bridge.tick();
   const posts = f.store.listOutbox();
   assert.equal(posts.length, 3);
-  assert.match(posts[2].text, /failed\. No task commits[\s\S]*\nPrecheck: advanced — because/);
+  assert.match(shown(posts[2]), /^:x: \*Failed\*\nNo task commits[\s\S]*\nMode: `advanced`\n/);
 });
 
 test('failures say where the session logs are and how to resume or retry', async t => {
   const f = fixture(t, { run: async request => { await request.onSession(`sess-${request.phase}`); return { text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? 'not JSON' : 'done' }; } });
   await f.bridge.receive(event()); await f.bridge.tick();
-  const text = f.store.listOutbox().at(-1).text, job = f.store.listJobs()[0];
+  const text = shown(f.store.listOutbox().at(-1)), job = f.store.listJobs()[0];
   assert.match(text, /did not return a valid verdict/);
-  assert.ok(text.includes(`Phase outputs and session IDs: ${path.join(f.folder, 'artifacts', job.taskId, job.id)}`));
-  assert.match(text, /Sessions \(codex\): precheck sess-precheck, architect sess-architect, implementer sess-implementer, reviewer sess-reviewer\./);
-  assert.ok(text.includes(`Open the last session (reviewer) locally: cd ${f.folder} && codex resume sess-reviewer`));
-  assert.match(text, /mention retry to rerun the same request on fix-code\/task/);
+  assert.ok(text.includes(`Phase outputs and session IDs:\n\`${path.join(f.folder, 'artifacts', job.taskId, job.id)}\``));
+  assert.ok(text.includes(`*Resume the reviewer session locally*\n\`\`\`cd ${f.folder}\ncodex resume sess-reviewer\`\`\``));
+  assert.match(text, /• `retry` reruns the request on `fix-code\/task`/);
 });
 
 test('unresolved review findings are posted and fix queues them for the implementer', async t => {
   let reviews = 0;
   const f = fixture(t, { run: async request => ({ text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? JSON.stringify(++reviews <= 2 ? { verdict: 'changes_requested', summary: 'Hold leaks into Next', findings: ['heldOutcome must not infer the hold from busy', 'add an e2e regression'] } : { verdict: 'pass', summary: 'ok', findings: [] }) : 'done' }) });
   await f.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await f.bridge.tick();
-  const text = f.store.listOutbox().at(-1).text;
-  assert.match(text, /Independent review \(changes_requested\): Hold leaks into Next\nFindings:\n1\. heldOutcome must not infer the hold from busy\n2\. add an e2e regression\nMention fix to have the implementer address these findings on fix-code\/task/);
+  const text = shown(f.store.listOutbox().at(-1));
+  assert.match(text, /\*Independent review: changes requested\*\nHold leaks into Next\n\n1\. heldOutcome must not infer the hold from busy\n\n2\. add an e2e regression\nMention `fix` to address these findings on `fix-code\/task`/);
   assert.equal(f.publications(), 0);
   f.calls.length = 0;
   await f.bridge.receive({ ...event('<@UBOT> fix', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
@@ -333,7 +334,7 @@ test('unresolved review findings are posted and fix queues them for the implemen
 test('fix is rejected when no review requested changes', async t => {
   const f = fixture(t, { run: async request => { if (request.phase === 'implementer') throw new Error('boom'); return modeRun(pre('advanced'))(request); } });
   await f.bridge.receive(event()); await f.bridge.tick();
-  assert.doesNotMatch(f.store.listOutbox().at(-1).text, /Mention fix/);
+  assert.doesNotMatch(shown(f.store.listOutbox().at(-1)), /Mention `fix`/);
   await f.bridge.receive({ ...event('<@UBOT> fix', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
   assert.match(f.posts.at(-1)?.text ?? f.store.listOutbox().at(-1).text, /Fix applies only after an independent review requested changes/);
   assert.equal(f.store.listJobs().length, 1);
@@ -438,11 +439,11 @@ test('acknowledgement waits for the precheck estimate and status updates repeat 
   const running = f.bridge.tick();
   await new Promise(resolve => setTimeout(resolve, 75));
   release(); await running;
-  const texts = f.store.listOutbox().map(entry => entry.text).slice(1);
-  assert.match(texts[0], /started\. Mode: simple\. Estimated time: about 7 min\. .*every 1 min/);
+  const texts = f.store.listOutbox().map(shown).slice(1);
+  assert.equal(texts[0], ':hourglass_flowing_sand: *Started*\nMode: `simple`\nEstimate: about 7 min\nUpdates every 1 min');
   assert.ok(texts.length >= 4, 'at least two status updates between acknowledgement and result');
-  for (const text of texts.slice(1, -1)) assert.match(text, /still running: implementer \(0 min elapsed; estimated about 7 min\)\./);
-  assert.match(texts.at(-1), /finished with a draft PR/);
+  for (const text of texts.slice(1, -1)) assert.equal(text, ':hourglass_flowing_sand: *Still running* · `implementer`\n0 min elapsed\nEstimate: about 7 min');
+  assert.match(texts.at(-1), /PR #1>\* opened as draft/);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(f.store.listOutbox().length, texts.length + 1, 'status updates stop once the task is done');
 });
@@ -450,9 +451,9 @@ test('acknowledgement waits for the precheck estimate and status updates repeat 
 test('explicit mode skips the estimate in the acknowledgement', async t => {
   const f = fixture(t, { run: modeRun(pre('simple')) });
   await f.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await f.bridge.tick();
-  const [queuedReply, ack] = f.store.listOutbox().map(entry => entry.text);
-  assert.match(queuedReply, /queued\. Provider: codex\. Repository: example\/app\. Mode: medium \(requested\)\./);
-  assert.match(ack, /started\. Estimated time: unknown \(precheck skipped\)\./);
+  const [queuedReply, ack] = f.store.listOutbox().map(shown);
+  assert.match(queuedReply, /\nRepository: `example\/app`\nMode: `medium` \(requested\)$/);
+  assert.equal(ack, ':hourglass_flowing_sand: *Started*\nEstimate: unknown (precheck skipped)\nUpdates every 5 min');
 });
 
 test('two distinct risk categories make advanced; duplicates in one category do not', () => {
@@ -548,12 +549,12 @@ test('channel lookup happens after durable intake; thread context remains pinned
   assert.equal(lookups, 0);
   assert.equal(f.store.listJobs().length, 1);
   assert.equal(f.store.getTask(accepted.taskId).repository, null);
-  assert.match(f.store.listOutbox()[0].text, /^Task \w+ queued\. Provider: codex\. Results will return in this thread\.$/, 'repository is not known yet');
+  assert.match(shown(f.store.listOutbox()[0]), /^:hourglass: \*Queued\* · task `\w+`\nProvider: `codex`$/, 'repository is not known yet');
   await f.bridge.tick();
   assert.equal(lookups, 1); assert.equal(prepares, 1);
   assert.equal(f.store.getTask(accepted.taskId).repository.github, 'example/billing-service');
   assert.match(f.calls[0].prompt, /Slack #billing-service → example\/billing-service/);
-  assert.match(f.store.listOutbox()[1].text, /started\. Repository: #billing-service → example\/billing-service\. Mode: /);
+  assert.match(shown(f.store.listOutbox()[1]), /\*Started\*\nRepository: #billing-service → `example\/billing-service`\nMode: /);
   changedName = true;
   await f.bridge.receive({ ...event('<@UBOT> followup -- also test an empty response', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
   await f.bridge.tick();
@@ -632,7 +633,7 @@ test('run rejects a runtime that is not configured or available, and help lists 
   assert.ok(f.posts.some(p => /Runtime claude is not configured: add models\.claude and allowedModels\.claude/.test(p.text)));
   await f.bridge.receive({ ...event('<@UBOT> help'), event_id: 'Ev2', event: { ...event('<@UBOT> help').event, ts: '123.5' } });
   await f.bridge.flushOutbox();
-  assert.ok(f.posts.some(p => /runtime=codex \(default codex; run only\)/.test(p.text)));
+  assert.ok(f.posts.some(p => /• `runtime=codex` \(default `codex`; new tasks only\)/.test(shown(p))));
 });
 
 test('followup and retry also reject a task runtime that is no longer available', async t => {
@@ -758,40 +759,44 @@ test('alias mode: implicit repo= starts a task on that alias', async t => {
 
 const linkRun = implementer => async request => ({ text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? '{"verdict":"pass","summary":"Verified","findings":[]}' : request.phase === 'implementer' && implementer ? implementer : `${request.phase} evidence` });
 
-test('final PR result posts a clickable link block with a plain-text body; other replies have no blocks', async t => {
-  const f = fixture(t, { run: linkRun() });
+test('final PR result links "PR #1" in mrkdwn and keeps a plain-text fallback; model output is not posted', async t => {
+  const f = fixture(t, { run: linkRun('*bold* <!channel> long implementer report') });
   await f.bridge.receive(event()); await f.bridge.tick(); await f.bridge.flushOutbox();
   assert.equal(f.posts.length, 3);
-  const [queued, acknowledgement, final] = f.posts;
-  assert.equal('blocks' in queued, false);
-  assert.equal('blocks' in acknowledgement, false);
-  const prUrl = 'https://github.com/example/app/pull/1';
-  assert.match(final.text, /finished with a draft PR: https:\/\/github\.com\/example\/app\/pull\/1/);
-  assert.deepEqual(final.blocks[0], { type: 'section', text: { type: 'mrkdwn', text: `<${prUrl}|Open pull request>` } });
-  const body = final.blocks.slice(1);
-  assert.ok(body.length >= 1);
-  assert.ok(body.every(block => block.type === 'section' && block.text.type === 'plain_text' && block.text.emoji === false));
-  const entry = f.store.listOutbox().find(e => e.link === prUrl);
-  assert.equal(body.map(block => block.text.text).join(''), safeText(entry.text, 11000));
-});
-
-test('long final result body is split into plain_text blocks of at most 3000 characters', async t => {
-  const long = 'Detailed line about the change.\n'.repeat(200) + 'tail';
-  const f = fixture(t, { run: linkRun(long) });
-  await f.bridge.receive(event()); await f.bridge.tick(); await f.bridge.flushOutbox();
   const final = f.posts[2];
-  const body = final.blocks.slice(1);
-  assert.ok(body.length >= 3);
-  assert.ok(body.every(block => block.text.type === 'plain_text' && block.text.text.length <= 3000));
-  const entry = f.store.listOutbox().find(e => e.link === 'https://github.com/example/app/pull/1');
-  assert.equal(body.map(block => block.text.text).join(''), safeText(entry.text, 11000));
+  assert.equal(final.mrkdwn, false);
+  assert.equal(final.text, `Task ${f.store.listTasks()[0].id}: draft PR https://github.com/example/app/pull/1`);
+  assert.deepEqual(final.blocks[0].text, { type: 'mrkdwn', text: ':white_check_mark: *<https://github.com/example/app/pull/1|PR #1>* opened as draft\nBranch: `fix-code/task`\nMode: `advanced`\nReview: passed\nLogic files: 2 predicted, 2 changed' });
+  assert.ok(final.blocks.slice(1).every(block => block.text.type === 'plain_text' && block.text.emoji === false));
+  assert.ok(f.posts.every(post => !shown(post).includes('long implementer report')));
 });
 
-test('links that are not GitHub pull request URLs post without blocks', async t => {
+test('plain sections stay plain_text in chunks of at most 3000 characters; mrkdwn sections are bridge-escaped', async t => {
   const f = fixture(t);
-  const links = ['https://gitlab.com/example/app/pull/1', 'https://github.com/example/app/pull/1/files', 'http://github.com/example/app/pull/1', 'https://github.com/example/app/issues/1'];
-  links.forEach((link, i) => f.store.saveOutbox({ id: `link${i}`, status: 'pending', channel: 'C123', threadTs: '123.1', text: 'Done', attempts: 0, nextAttemptAt: 0, created: Date.now() + i, link }));
+  const body = '*not bold* <!channel> '.repeat(400);
+  f.store.saveOutbox({ id: 'formatted', status: 'pending', channel: 'C123', threadTs: '123.1', text: 'fallback <!here>', sections: [{ mrkdwn: '*Head*' }, { plain: body }], attempts: 0, nextAttemptAt: 0, created: Date.now() });
   await f.bridge.flushOutbox();
-  assert.equal(f.posts.length, links.length);
-  assert.ok(f.posts.every(post => !('blocks' in post)));
+  const [post] = f.posts;
+  assert.equal(post.text, 'fallback &lt;!here&gt;');
+  assert.deepEqual(post.blocks[0].text, { type: 'mrkdwn', text: '*Head*' });
+  const plainBlocks = post.blocks.slice(1);
+  assert.ok(plainBlocks.length >= 3);
+  assert.ok(plainBlocks.every(block => block.text.type === 'plain_text' && block.text.text.length <= 3000));
+  assert.equal(plainBlocks.map(block => block.text.text).join(''), body);
+});
+
+test('status links only GitHub pull request URLs and escapes everything else', async t => {
+  const f = fixture(t);
+  await f.bridge.receive(event()); await f.bridge.tick();
+  const task = f.store.listTasks()[0];
+  const status = async (prUrl, n) => {
+    f.store.saveTask({ ...task, prUrl, branch: 'fix-code/<x>' });
+    await f.bridge.receive({ ...event('<@UBOT> status', { thread_ts: '123.1', ts: `123.${n}` }), event_id: `Ev${n}` });
+    return shown(f.store.listOutbox().at(-1));
+  };
+  assert.equal(await status('https://github.com/example/app/pull/7', 2), ':white_check_mark: *Status:* `succeeded`\nStage: `publishing`\nBranch: `fix-code/&lt;x&gt;`\nPR: <https://github.com/example/app/pull/7|PR #7>');
+  for (const [i, link] of ['https://gitlab.com/example/app/pull/1', 'https://github.com/example/app/pull/1/files', 'https://github.com/a/b/pull/1|evil>'].entries()) {
+    const text = await status(link, i + 3);
+    assert.ok(!text.includes('<https'), link);
+  }
 });
