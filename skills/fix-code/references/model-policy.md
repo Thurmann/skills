@@ -14,13 +14,14 @@ Use the active runtime's actual model/tool schema or supported-model listing. Ch
 
 | Mode | Precheck | Architect | Implementer | Reviewer |
 | --- | --- | --- | --- | --- |
+| Fast | none | none | one agent, cheapest efficient model | only when the change reaches 50% over the Fast budget |
 | Simple | inline or cheapest, low effort | none | one agent, cheapest efficient model | none |
 | Medium | inline or cheapest, low effort | optional, for bounded diagnosis only | cheap subagents per subtask | only when the diff exceeds the precheck prediction |
 | Advanced | inline or cheapest, low effort | required, plans before edits | cheap subagents per unit | required, fresh architect-class instance |
 
 Precheck runs inline for named modes, plainly trivial requests, or a cheap caller; otherwise it uses the cheapest efficient model at low effort. See [modes](modes.md).
 
-For Simple, "cheapest efficient" means the least expensive model that still completes small coding edits reliably with the required tools. Do not pick a model so weak that it needs repeated retries. In Claude Code, this is normally the `haiku` alias for the precheck and Simple, and for Medium/Advanced implementers unless a unit needs more capability. The strongest efficient Claude model fills the architect and reviewer roles. Validate aliases against the runtime as usual.
+For Fast and Simple, "cheapest efficient" means the least expensive model that still completes small coding edits reliably with the required tools. Do not pick a model so weak that it needs repeated retries. In Claude Code, this is normally the `haiku` alias for the precheck, Fast, and Simple, and for Medium/Advanced implementers unless a unit needs more capability. The strongest efficient Claude model fills the architect and reviewer roles. Validate aliases against the runtime as usual.
 
 As of the initial skill creation, official Codex documentation suggests GPT-6.1 Sol for demanding reasoning and GPT-6 Luna for narrow high-volume work. These are useful starting candidates, not pinned requirements or guarantees of account availability. Claude Code must use its supported Claude model aliases/IDs instead; do not pass GPT IDs to its Agent tool. Select the strongest efficient supported Claude model for architecture and its least expensive capable model for implementation.
 

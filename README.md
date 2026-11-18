@@ -8,7 +8,7 @@ This repository is the source of truth for personal skills and related tools.
 
 ## Skills
 
-- [`fix-code`](skills/fix-code/SKILL.md) — fix bugs, implement features, or build repositories in Simple, Medium, or Advanced mode (chosen by a cheap precheck), with isolated Git branches and pull requests.
+- [`fix-code`](skills/fix-code/SKILL.md) — fix bugs, implement features, or build repositories in Simple, Medium, or Advanced mode (chosen by a cheap precheck) or an explicitly requested Fast mode for tiny changes, with isolated Git branches and pull requests.
 - [`travel-vlog`](skills/travel-vlog/SKILL.md) — plan, edit, render, and verify chronological travel vlogs made from real footage.
 
 ## Install the skills

@@ -29,7 +29,7 @@ test('parses mode and precheck_model on run and followup', () => {
 });
 
 test('rejects invalid and duplicate mode values', () => {
-  assert.throws(() => parseCommand('<@U123ABC> run repo=x mode=expert -- do it', BOT), /mode must be simple, medium, or advanced/);
+  assert.throws(() => parseCommand('<@U123ABC> run repo=x mode=expert -- do it', BOT), /mode must be fast, simple, medium, or advanced/);
   assert.throws(() => parseCommand('<@U123ABC> followup mode=simple mode=simple -- do it', BOT), /Duplicate option: mode/);
 });
 
@@ -94,7 +94,7 @@ test('bare status, help, cancel, retry remain commands and structured run keeps 
   assert.deepEqual(parseCommand('<@U123ABC> run mode=simple | x', BOT, { requireRepo: false }), {
     command: 'run', mode: 'simple', models: {}, request: 'x',
   });
-  assert.throws(() => parseCommand('<@U123ABC> run mode=bogus | x', BOT, { requireRepo: false }), /mode must be simple, medium, or advanced/);
+  assert.throws(() => parseCommand('<@U123ABC> run mode=bogus | x', BOT, { requireRepo: false }), /mode must be fast, simple, medium, or advanced/);
 });
 
 test('accepts |, em dash and en dash as the separator like --', () => {

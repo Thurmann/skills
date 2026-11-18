@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { Bridge, parsePrecheck, isLogicFile, readonlySnapshot, reviewJSON } from '../src/bridge.js';
+import { Bridge, parsePrecheck, isLogicFile, logicLines, fastReview, readonlySnapshot, reviewJSON } from '../src/bridge.js';
 import { Store } from '../src/store.js';
 import { safeText } from '../src/protocol.js';
 
@@ -24,7 +24,7 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'rev-list') return options.commits ?? '1\n'; if (args[0] === 'ls-files') return state.untracked; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'rev-list') return options.commits ?? '1\n'; if (args[0] === 'ls-files') return state.untracked; if (args.includes('--numstat')) return options.numstat ?? '1\t1\ta.js\n'; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
     async publishPR(c, task, result, outputDir, signal, options) { publications++; published.push(result); publishOptions.push(options); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
@@ -180,10 +180,51 @@ test('simple escalates to medium on SCOPE_EXCEEDED and then runs the reviewer', 
   assert.match(f.store.listOutbox().at(-1).text, /Independent review: passed/);
 });
 
-test('simple escalates when more than three files change', async t => {
-  const f = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a\nb\nc\nd' });
+test('simple escalates only when more than six logic files change', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a\nb\nc\nd\ne\nf\ng' });
   await f.bridge.receive(event()); await f.bridge.tick();
   assert.deepEqual(phases(f), ['precheck', 'implementer', 'reviewer']);
+  const g = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a\nb\nc\nd\ne\nf' });
+  await g.bridge.receive(event()); await g.bridge.tick();
+  assert.deepEqual(phases(g), ['precheck', 'implementer']);
+});
+
+test('explicit mode=fast skips precheck and review, compiles only, and publishes', async t => {
+  const f = fixture(t, { run: modeRun(pre('advanced'), 'done\nVERIFICATION: complete'), nameOnly: 'a.js\nb.js\nc.js\nd.js', numstat: '1\t1\ta.js\n1\t0\tb.js\n0\t1\tc.js\n1\t1\td.js\n9\t0\ta.test.js\n' });
+  await f.bridge.receive(event('<@UBOT> run repo=app mode=fast -- rename a flag')); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['implementer']);
+  const prompt = f.calls[0].prompt;
+  assert.match(prompt, /Execution mode: fast/); assert.match(prompt, /Do not run tests; verify by compiling/);
+  assert.doesNotMatch(prompt, /run the complete test suite/); assert.doesNotMatch(prompt, /SCOPE_EXCEEDED/);
+  const job = f.store.listJobs()[0];
+  assert.equal(job.mode, 'fast'); assert.equal(job.calibration.changed_logic_lines, 4); assert.equal(job.calibration.reviewed, false);
+  assert.deepEqual(f.publishOptions, [{ draft: false, draftReason: null }]);
+  assert.match(f.published[0], /^Mode: fast\. Independent review: not required \(fast mode, 4 logic lines in 4 logic files within budget\)\. Logic lines\/files changed: 4\/4 \(fast budget 5\/4\)\. Tests: not run locally/);
+});
+
+test('fast mode reviews only at 50% over budget and never escalates', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a.js', numstat: '7\t2\ta.js\n' });
+  await f.bridge.receive(event('<@UBOT> run repo=app mode=fast -- tweak')); await f.bridge.tick();
+  assert.deepEqual(phases(f), ['implementer']);
+  assert.match(f.published[0], /over budget but under the 50% review threshold/);
+  const g = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a.js', numstat: '8\t0\ta.js\n' });
+  await g.bridge.receive(event('<@UBOT> run repo=app mode=fast -- tweak')); await g.bridge.tick();
+  assert.deepEqual(phases(g), ['implementer', 'reviewer']);
+  assert.equal(g.store.listJobs()[0].mode, 'fast');
+  assert.match(g.published[0], /^Mode: fast\. Independent review: passed/);
+});
+
+test('fast limits: lines count once per modified line and review starts at 8 lines or 6 files', () => {
+  assert.equal(logicLines('3\t2\tsrc/a.js\n1\t0\tREADME.md\n4\t4\ttest/a.test.js\n-\t-\tlogo.png\n'), 4);
+  assert.equal(fastReview(5, 4).reviewReason, null);
+  assert.equal(fastReview(7, 5).reviewReason, null);
+  assert.match(fastReview(8, 1).reviewReason, /50% over budget/);
+  assert.match(fastReview(6, 6).reviewReason, /50% over budget/);
+});
+
+test('the precheck can never select fast', () => {
+  assert.equal(parsePrecheck(pre('fast')).mode, 'medium');
+  assert.match(parsePrecheck(pre('fast')).reason, /unreadable/);
 });
 
 test('medium within prediction skips review; exceeding the prediction requires it', async t => {
