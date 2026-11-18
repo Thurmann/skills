@@ -4,10 +4,34 @@ import os from 'node:os';
 import path from 'node:path';
 import { errorDetail } from './errors.js';
 
-export function commandEnv() {
+let githubAuth = { tokenFile: null, app: false, ghPath: 'gh' };
+const APP_TOKEN_MAX_AGE_MS = 60 * 60000;
+/** Set once at startup from config; a null token file leaves the environment exactly as before. */
+export function configureGitHubAuth({ githubTokenFile, githubAuth: mode, ghPath } = {}) { githubAuth = { tokenFile: githubTokenFile || null, app: mode === 'app', ghPath: ghPath || 'gh' }; }
+const usesGitHub = executable => executable === githubAuth.ghPath || ['git', 'gh'].includes(path.basename(executable));
+/** Read and validate the token file; errors name the path only, never its contents. */
+export function readGitHubToken(file, { maxAgeMs, now = Date.now() } = {}) {
+  let stat, raw;
+  try { stat = fs.statSync(file); }
+  catch (error) { throw new Error(error.code === 'ENOENT' ? `GitHub token file ${file} is missing; check the token refresh job.` : `GitHub token file ${file} could not be read (${error.code || 'error'}).`); }
+  if (!stat.isFile()) throw new Error(`GitHub token file ${file} is not a regular file.`);
+  if (maxAgeMs !== undefined && now - stat.mtimeMs > maxAgeMs) throw new Error(`GitHub token file ${file} is ${Math.floor((now - stat.mtimeMs) / 60000)} minutes old (limit ${Math.floor(maxAgeMs / 60000)}); check the token refresh job.`);
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (error) { throw new Error(`GitHub token file ${file} could not be read (${error.code || 'error'}).`); }
+  const token = raw.trim();
+  if (!token) throw new Error(`GitHub token file ${file} is empty; check the token refresh job.`);
+  if (!/^\S+$/.test(token)) throw new Error(`GitHub token file ${file} must contain exactly one token.`);
+  return token;
+}
+export function checkGitHubTokenFile(file, options) { return readGitHubToken(file, options); }
+export function commandEnv(executable) {
   const result = {};
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'SSH_AUTH_SOCK', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST']) {
     if (process.env[key]) result[key] = process.env[key];
+  }
+  if (githubAuth.tokenFile) {
+    delete result.GH_TOKEN; delete result.GITHUB_TOKEN;
+    if (usesGitHub(executable)) result.GH_TOKEN = readGitHubToken(githubAuth.tokenFile, { maxAgeMs: githubAuth.app ? APP_TOKEN_MAX_AGE_MS : undefined });
   }
   result.GH_HOST = 'github.com'; // This publisher/resolver supports GitHub.com only.
   result.GIT_TERMINAL_PROMPT = '0';
@@ -16,7 +40,9 @@ export function commandEnv() {
 export function command(executable, args, { cwd, signal, timeout = 120000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Command canceled.')); return; }
-    const child = spawn(executable, args, { cwd, env: commandEnv(), shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+    let env;
+    try { env = commandEnv(executable); } catch (error) { reject(error); return; }
+    const child = spawn(executable, args, { cwd, env, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', failure, killTimer, settled = false, termination;
     let finishTermination;
     const kill = name => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, name); else child.kill(name); } catch {} };

@@ -60,6 +60,11 @@ export function loadConfig(filename) {
   if (!Number.isInteger(c.maxRepairRounds) || c.maxRepairRounds < 0 || c.maxRepairRounds > 3) throw new Error('maxRepairRounds must be 0..3.');
   if (typeof c.allowNetwork !== 'boolean') throw new Error('Set allowNetwork explicitly to true or false.');
   c.pythonPath ||= 'python3'; c.ghPath ||= 'gh';
+  c.githubAuth ??= 'user';
+  if (!['user', 'app'].includes(c.githubAuth)) throw new Error('githubAuth must be "user" or "app".');
+  if (c.githubTokenFile !== undefined) c.githubTokenFile = absolute(c.githubTokenFile, directory);
+  if (c.githubAuth === 'app' && !c.githubTokenFile) throw new Error('githubAuth "app" requires githubTokenFile (GitHub App installation tokens expire after one hour).');
+  if (c.githubTokenFile && c.forwardGitHubAuth === true) throw new Error('forwardGitHubAuth cannot be combined with githubTokenFile; coding runtimes never receive the GitHub token.');
   const hasAliases = c.repositories && typeof c.repositories === 'object' && !Array.isArray(c.repositories) && Object.keys(c.repositories).length > 0;
   c.repositoryRouting ??= { mode: hasAliases ? 'aliases' : 'channel' };
   if (!c.repositoryRouting || typeof c.repositoryRouting !== 'object' || Array.isArray(c.repositoryRouting)) throw new Error('repositoryRouting must be an object.');

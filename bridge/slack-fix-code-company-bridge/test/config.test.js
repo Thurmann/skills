@@ -190,3 +190,20 @@ test('a config without skillPath uses the repository skill', t => {
   const f = fixture(t); delete f.config.skillPath;
   assert.equal(loadConfig(f.save()).skillPath, defaultSkill);
 });
+
+test('GitHub auth defaults to user mode, rejects unknown modes, and resolves the token file beside the config', t => {
+  const f = fixture(t);
+  assert.equal(loadConfig(f.save()).githubAuth, 'user');
+  f.config.githubAuth = 'bogus';
+  assert.throws(() => loadConfig(f.save()), /githubAuth must be "user" or "app"/);
+  f.config.githubAuth = 'user'; f.config.githubTokenFile = './tok';
+  assert.equal(loadConfig(f.save()).githubTokenFile, path.join(f.dir, 'tok'));
+});
+
+test('app mode requires a token file and a token file cannot be combined with forwarded GitHub auth', t => {
+  const f = fixture(t);
+  f.config.githubAuth = 'app';
+  assert.throws(() => loadConfig(f.save()), /requires githubTokenFile/);
+  f.config.githubTokenFile = './tok'; f.config.forwardGitHubAuth = true; f.config.githubAuth = 'user';
+  assert.throws(() => loadConfig(f.save()), /forwardGitHubAuth cannot/);
+});
