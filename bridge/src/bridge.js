@@ -59,10 +59,28 @@ function statusUpdate(task, job, started) {
 function precheckSummary(job) {
   return job.precheck ? `Precheck: ${job.precheck.mode} — ${job.precheck.reason} Predicted logic files: ${job.precheck.predicted_files ?? 'unknown'}.` : `Precheck skipped: mode ${job.mode} requested explicitly.`;
 }
-function reviewJSON(text) {
+// Reviewers sometimes wrap the verdict in prose ("Still reviewing…\n\n{...}"): take the last balanced object carrying a verdict key.
+function embeddedVerdict(text) {
+  let found;
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0, inString = false, escaped = false, end = -1;
+    for (let i = start; i < text.length && end < 0; i++) {
+      const ch = text[i];
+      if (inString) { if (escaped) escaped = false; else if (ch === '\\') escaped = true; else if (ch === '"') inString = false; }
+      else if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) end = i;
+    }
+    if (end < 0) continue;
+    try { const value = JSON.parse(text.slice(start, end + 1)); if (value && typeof value === 'object' && 'verdict' in value) { found = value; start = end; } } catch {}
+  }
+  return found;
+}
+export function reviewJSON(text) {
   const clean = text.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
   let result;
-  try { result = JSON.parse(clean); } catch { throw new Error('Reviewer did not return a valid verdict; no publication was attempted.'); }
+  try { result = JSON.parse(clean); } catch { result = embeddedVerdict(text); }
+  if (!result) throw new Error('Reviewer did not return a valid verdict; no publication was attempted.');
   if (!['pass', 'changes_requested', 'blocked'].includes(result.verdict) || typeof result.summary !== 'string' || !Array.isArray(result.findings)) throw new Error('Reviewer verdict was incomplete; no publication was attempted.');
   if (result.verdict === 'pass' && result.findings.length) throw new Error('Reviewer returned a contradictory pass with findings; publication stopped.');
   return result;
