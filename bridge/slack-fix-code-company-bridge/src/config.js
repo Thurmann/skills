@@ -123,7 +123,9 @@ export function loadConfig(filename) {
     allowed.forEach(v => id(v, /^(?!-)[a-zA-Z0-9._:/-]+$/, 'model ID'));
     for (const role of ['precheck', 'architect', 'implementer', 'reviewer']) if (!allowed.includes(defaults[role])) throw new Error(`${runtime}.${role} is not in its model allowlist.`);
     const env = entry.env ?? [];
-    if (!Array.isArray(env) || env.some(v => typeof v !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(v) || v.startsWith('SLACK_'))) throw new Error(`runtimes.${runtime}.env must list environment variable names (not SLACK_*).`);
+    // Company copy: coding runtimes never receive Slack or GitHub credentials, so these names are always rejected.
+    const forbidden = v => v.startsWith('SLACK_') || v === 'GH_TOKEN' || v === 'GITHUB_TOKEN';
+    if (!Array.isArray(env) || env.some(v => typeof v !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(v) || forbidden(v))) throw new Error(`runtimes.${runtime}.env must list environment variable names (not SLACK_*, GH_TOKEN or GITHUB_TOKEN).`);
     const bin = entry.path ?? c[`${runtime}Path`] ?? runtime;
     if (typeof bin !== 'string' || !bin) throw new Error('Configured paths must be nonempty strings.');
     c.runtimes[runtime] = { path: bin, models: defaults, allowedModels: allowed, env };
