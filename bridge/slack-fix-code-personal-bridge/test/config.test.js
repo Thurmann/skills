@@ -8,7 +8,7 @@ import { loadConfig, resolveModels, selectDefaultRuntime, findConfig, loadEnvBes
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-code-config-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const config = { teamId: 'T123', allowedUsers: ['U123'], allowedChannels: ['C123'], runtime: 'codex', allowNetwork: true, skillPath: path.resolve(import.meta.dirname, '../../skills/fix-code'), models: { codex: { architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] }, repositories: { app: { path: dir, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' } } };
+  const config = { teamId: 'T123', allowedUsers: ['U123'], allowedChannels: ['C123'], runtime: 'codex', allowNetwork: true, skillPath: path.resolve(import.meta.dirname, '../../../skills/fix-code'), models: { codex: { architect: 'strong', implementer: 'cheap', reviewer: 'strong' } }, allowedModels: { codex: ['strong', 'cheap'] }, repositories: { app: { path: dir, base: 'origin/main', baseBranch: 'main', remote: 'origin', github: 'example/app' } } };
   const filename = path.join(dir, 'config.json');
   const save = () => { fs.writeFileSync(filename, JSON.stringify(config)); return filename; };
   return { dir, config, save };

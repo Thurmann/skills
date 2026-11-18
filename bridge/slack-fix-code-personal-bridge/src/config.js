@@ -4,7 +4,7 @@ import os from 'node:os';
 import { parseEnv } from 'node:util';
 import { DEFAULT_PRIORITY, providerNames } from './providers/index.js';
 
-export const defaultSkill = path.resolve(import.meta.dirname, '../../skills/fix-code');
+export const defaultSkill = path.resolve(import.meta.dirname, '../../../skills/fix-code');
 export const configHome =(env = process.env) => path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'fix-code-bridge');
 /** Config lookup: --config, FIX_CODE_CONFIG, ./config.json, then the per-user config directory. */
 export function findConfig(filename, env = process.env, cwd = process.cwd()) {

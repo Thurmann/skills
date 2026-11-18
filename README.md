@@ -3,7 +3,8 @@
 This repository is the source of truth for personal skills and related tools.
 
 - `skills/<skill-name>/` contains portable agent skills.
-- `bridge/` contains the fix-code Slack bridge application.
+- `bridge/slack-fix-code-personal-bridge/` — the fix-code Slack bridge for personal use (uses your authenticated `gh` account).
+- `bridge/slack-fix-code-company-bridge/` — the company variant: GitHub App installation tokens via a token file, and Claude via Vertex AI or Microsoft Foundry.
 - `scripts/install-skills.py` installs the skills to Codex and, when present, Claude Code.
 
 ## Skills

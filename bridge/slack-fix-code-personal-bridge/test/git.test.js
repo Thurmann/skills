@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { expectedRemote, prepareTask, guardCheck, publishPR } from '../src/git.js';
 
-const skillPath = path.resolve(import.meta.dirname, '../../skills/fix-code');
+const skillPath = path.resolve(import.meta.dirname, '../../../skills/fix-code');
 const git = (cwd, ...args) => execFileSync('/usr/bin/git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
 test('GitHub remote validation matches owner/repo and rejects other hosts or repos', () => {
