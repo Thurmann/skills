@@ -99,7 +99,7 @@ export function parseCommand(text, botUserId, options = {}) {
     if (command === 'run' && options.requireRepo !== false && !parsed.repo) fail('run requires repo=<alias>');
     return { command, ...(parsed.repo ? { repo: parsed.repo } : {}), ...(parsed.runtime ? { runtime: parsed.runtime } : {}), ...(parsed.mode ? { mode: parsed.mode } : {}), models: parsed.models, request };
   }
-  if (!['status', 'cancel', 'retry', 'help'].includes(command) || rest) return naturalRequest(commandText);
+  if (!['status', 'cancel', 'retry', 'fix', 'help'].includes(command) || rest) return naturalRequest(commandText);
   return { command };
 }
 

@@ -90,7 +90,7 @@ test('plain mentions without a command keyword are natural requests', () => {
 });
 
 test('bare status, help, cancel, retry remain commands and structured run keeps options', () => {
-  for (const command of ['status', 'help', 'cancel', 'retry']) assert.deepEqual(parseCommand(`<@${BOT}> ${command}`, BOT), { command });
+  for (const command of ['status', 'help', 'cancel', 'retry', 'fix']) assert.deepEqual(parseCommand(`<@${BOT}> ${command}`, BOT), { command });
   assert.deepEqual(parseCommand('<@U123ABC> run mode=simple | x', BOT, { requireRepo: false }), {
     command: 'run', mode: 'simple', models: {}, request: 'x',
   });
@@ -128,7 +128,7 @@ test('rejects missing, empty, and oversized requests', () => {
 });
 
 test('handles simple commands and safely escapes Slack output', () => {
-  for (const command of ['status', 'cancel', 'retry', 'help']) {
+  for (const command of ['status', 'cancel', 'retry', 'fix', 'help']) {
     assert.deepEqual(parseCommand(`<@${BOT}> ${command}`, BOT), { command });
   }
   assert.equal(safeText('\u001b[31mred\u001b[0m\n\tnext\u0001!'), 'red\n\tnext!');

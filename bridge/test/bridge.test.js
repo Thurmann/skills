@@ -259,6 +259,45 @@ test('failures report the precheck decision in the final message', async t => {
   assert.match(posts[2].text, /failed\. No task commits[\s\S]*\nPrecheck: advanced — because/);
 });
 
+test('failures say where the session logs are and how to resume or retry', async t => {
+  const f = fixture(t, { run: async request => { await request.onSession(`sess-${request.phase}`); return { text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? 'not JSON' : 'done' }; } });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  const text = f.store.listOutbox().at(-1).text, job = f.store.listJobs()[0];
+  assert.match(text, /did not return a valid verdict/);
+  assert.ok(text.includes(`Phase outputs and session IDs: ${path.join(f.folder, 'artifacts', job.taskId, job.id)}`));
+  assert.match(text, /Sessions \(codex\): precheck sess-precheck, architect sess-architect, implementer sess-implementer, reviewer sess-reviewer\./);
+  assert.ok(text.includes(`Open the last session (reviewer) locally: cd ${f.folder} && codex resume sess-reviewer`));
+  assert.match(text, /mention retry to rerun the same request on fix-code\/task/);
+});
+
+test('unresolved review findings are posted and fix queues them for the implementer', async t => {
+  let reviews = 0;
+  const f = fixture(t, { run: async request => ({ text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? JSON.stringify(++reviews <= 2 ? { verdict: 'changes_requested', summary: 'Hold leaks into Next', findings: ['heldOutcome must not infer the hold from busy', 'add an e2e regression'] } : { verdict: 'pass', summary: 'ok', findings: [] }) : 'done' }) });
+  await f.bridge.receive(event('<@UBOT> run repo=app mode=medium -- change')); await f.bridge.tick();
+  const text = f.store.listOutbox().at(-1).text;
+  assert.match(text, /Independent review \(changes_requested\): Hold leaks into Next\nFindings:\n1\. heldOutcome must not infer the hold from busy\n2\. add an e2e regression\nMention fix to have the implementer address these findings on fix-code\/task/);
+  assert.equal(f.publications(), 0);
+  f.calls.length = 0;
+  await f.bridge.receive({ ...event('<@UBOT> fix', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  const job = f.store.listJobs().at(-1);
+  assert.deepEqual(job.findings, ['heldOutcome must not infer the hold from busy', 'add an e2e regression']);
+  assert.equal(job.requestedMode, 'medium');
+  assert.equal(job.request, 'change');
+  await f.bridge.tick();
+  assert.deepEqual(f.calls.map(c => c.phase), ['implementer', 'reviewer']);
+  assert.match(f.calls[0].prompt, /"reviewFindings":\["heldOutcome must not infer the hold from busy"/);
+  assert.equal(f.publications(), 1);
+});
+
+test('fix is rejected when no review requested changes', async t => {
+  const f = fixture(t, { run: async request => { if (request.phase === 'implementer') throw new Error('boom'); return modeRun(pre('advanced'))(request); } });
+  await f.bridge.receive(event()); await f.bridge.tick();
+  assert.doesNotMatch(f.store.listOutbox().at(-1).text, /Mention fix/);
+  await f.bridge.receive({ ...event('<@UBOT> fix', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  assert.match(f.posts.at(-1)?.text ?? f.store.listOutbox().at(-1).text, /Fix applies only after an independent review requested changes/);
+  assert.equal(f.store.listJobs().length, 1);
+});
+
 test('low confidence without a risk flag does not bump the mode through tick', async t => {
   const f = fixture(t, { run: modeRun(pre('simple', { confidence: 'low' })) });
   await f.bridge.receive(event()); await f.bridge.tick();
