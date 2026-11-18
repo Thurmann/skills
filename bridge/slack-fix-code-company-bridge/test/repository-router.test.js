@@ -16,16 +16,23 @@ function fixture(t, config = {}) {
 }
 const channel = (name = 'widget', extra = {}) => ({ channel: { id: 'C123', name, is_archived: false, is_ext_shared: false, ...extra } });
 const repo = (id, owner = 'Acme', name = 'widget', extra = {}) => ({ id, name, full_name: `${owner}/${name}`, owner, default_branch: 'main', archived: false, disabled: false, permissions: { push: true }, ...extra });
-function routingFixture(t, { channels = channel(), repos = [repo(123)], listingOutput, config = {} } = {}) {
+function routingFixture(t, { channels = channel(), repos = [repo(123)], listingOutput, config = {}, top = {}, installed, boundMetadata = {} } = {}) {
   const base = fixture(t, config);
+  Object.assign(base.config, top);
+  const state = { installed, boundMetadata };
   const calls = [];
   const execute = async (exe, args, opts = {}) => {
     calls.push({ exe, args, opts });
-    if (exe === 'gh' && args[0] === 'api' && args.includes('/user/repos?per_page=100&affiliation=owner,collaborator,organization_member')) return listingOutput ?? JSON.stringify(repos);
+    const membership = args.at(-1)?.match(/select\(\.id == (\d+)\)/);
+    if (exe === 'gh' && args[0] === 'api' && args[5] === '/installation/repositories?per_page=100' && membership) {
+      const id = Number(membership[1]);
+      return JSON.stringify((state.installed ?? repos.map(r => r.id)).filter(value => value === id));
+    }
+    if (exe === 'gh' && args[0] === 'api' && (args.includes('/user/repos?per_page=100&affiliation=owner,collaborator,organization_member') || args.includes('/installation/repositories?per_page=100'))) return listingOutput ?? JSON.stringify(repos);
     if (exe === 'gh' && args[0] === 'api' && args[5]?.startsWith('/repos/')) {
       const full = args[5].slice('/repos/'.length);
       const bound = repos.find(r => r.full_name === full);
-      return JSON.stringify({ id: bound?.id ?? 123, full_name: full, default_branch: bound?.default_branch ?? 'main', archived: false, disabled: false, permissions: { push: true } });
+      return JSON.stringify({ id: bound?.id ?? 123, full_name: full, default_branch: bound?.default_branch ?? 'main', archived: false, disabled: false, permissions: { push: true }, ...state.boundMetadata });
     }
     if (exe === 'gh' && args[0] === 'repo' && args[1] === 'clone') {
       const dest = args[3];
@@ -54,7 +61,7 @@ function routingFixture(t, { channels = channel(), repos = [repo(123)], listingO
     throw new Error(`Unexpected fixture command: ${exe} ${args.join(' ')}`);
   };
   const router = createRepositoryRouter(base.config, { channelInfo: async id => { assert.equal(id, 'C123'); return channels; }, execute });
-  return { ...base, calls, execute, router, repos };
+  return { ...base, calls, execute, router, repos, state };
 }
 
 test('resolve uses exact case-insensitive channel-name match, Slack metadata, and all-page GitHub query', async t => {
@@ -337,4 +344,52 @@ test('a managed binding stays pinned when a local candidate later appears', asyn
   const prepared = await router.prepare({ channel: 'C123', channelName: binding.channelName, repository: binding.repository });
   assert.equal(prepared.path, binding.repository.path);
   assert.equal(prepared.storage, undefined);
+});
+
+test('app mode resolves through the installation endpoint without user-repo or push-permission fields', async t => {
+  const f = routingFixture(t, { top: { githubAuth: 'app' }, repos: [repo(123, 'Acme', 'widget', { permissions: undefined })] });
+  const result = await f.router.resolve({ channel: 'C123' });
+  assert.equal(result.repository.github, 'Acme/widget');
+  const listing = f.calls.find(call => call.exe === 'gh' && call.args.includes('/installation/repositories?per_page=100'));
+  assert.ok(listing.args.includes('--paginate'));
+  assert.match(listing.args.at(-1), /^\[\.repositories\[\] \| select/);
+  assert.doesNotMatch(listing.args.at(-1), /permissions/);
+  assert.equal(f.calls.some(call => call.args.includes('/user/repos?per_page=100&affiliation=owner,collaborator,organization_member')), false);
+});
+
+test('app mode keeps duplicate, owner-hint, and archived checks', async t => {
+  const duplicate = routingFixture(t, { top: { githubAuth: 'app' }, repos: [repo(1, 'Acme'), repo(2, 'Other')] });
+  await assert.rejects(duplicate.router.resolve({ channel: 'C123' }), /More than one/);
+  const hinted = routingFixture(t, { top: { githubAuth: 'app' }, config: { channelOwners: { C123: 'Other' } }, repos: [repo(1, 'Acme'), repo(2, 'Other')] });
+  assert.equal((await hinted.router.resolve({ channel: 'C123' })).repository.github, 'Other/widget');
+  const archived = routingFixture(t, { top: { githubAuth: 'app' }, repos: [repo(1, 'Acme', 'widget', { archived: true })] });
+  await assert.rejects(archived.router.resolve({ channel: 'C123' }), /archived or disabled/);
+});
+
+test('app mode prepare ignores push permission but requires current installation membership', async t => {
+  for (const permissions of [undefined, { push: false }]) {
+    const f = routingFixture(t, { top: { githubAuth: 'app' }, boundMetadata: { permissions } });
+    const binding = await f.router.resolve({ channel: 'C123' });
+    const task = { channel: 'C123', channelName: binding.channelName, repository: binding.repository };
+    assert.deepEqual(await f.router.prepare(task), binding.repository);
+    assert.equal(f.calls.some(call => call.exe === 'gh' && call.args[5] === '/installation/repositories?per_page=100' && /select\(\.id == 123\)/.test(call.args.at(-1))), true);
+  }
+});
+
+test('app mode prepare fails closed when the bound repository leaves the installation or becomes archived', async t => {
+  const f = routingFixture(t, { top: { githubAuth: 'app' } });
+  const binding = await f.router.resolve({ channel: 'C123' });
+  const task = { channel: 'C123', channelName: binding.channelName, repository: binding.repository };
+  f.state.installed = [];
+  await assert.rejects(f.router.prepare(task), /no longer included in the GitHub App installation/);
+  f.state.installed = undefined;
+  f.state.boundMetadata = { archived: true };
+  await assert.rejects(f.router.prepare(task), /no longer writable and active/);
+});
+
+test('user mode never calls the installation endpoint', async t => {
+  const f = routingFixture(t);
+  const binding = await f.router.resolve({ channel: 'C123' });
+  await f.router.prepare({ channel: 'C123', channelName: binding.channelName, repository: binding.repository });
+  assert.equal(f.calls.some(call => call.args.some(arg => String(arg).includes('/installation/'))), false);
 });

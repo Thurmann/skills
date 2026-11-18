@@ -15,8 +15,20 @@ function metadataObject(value, label) {
 }
 function validBranch(value) { return typeof value === 'string' && value.length > 0 && !value.startsWith('-') && !value.includes('\0'); }
 function pathExists(filename) { try { fs.lstatSync(filename); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } }
+function parsePages(raw) {
+  const items = [];
+  try {
+    for (const line of raw.split(/\r?\n/).filter(line => line.length > 0)) {
+      const page = JSON.parse(line);
+      if (!Array.isArray(page)) throw new Error();
+      items.push(...page);
+    }
+  } catch { throw new Error('GitHub returned invalid repository metadata.'); }
+  return items;
+}
 
 export function createRepositoryRouter(config, { channelInfo, execute = command } = {}) {
+  const appMode = () => config.githubAuth === 'app';
   const routing = config?.repositoryRouting;
   const root = typeof routing?.cloneRoot === 'string' && path.isAbsolute(routing.cloneRoot) ? path.resolve(routing.cloneRoot) : null;
   const localRoot = typeof routing?.localRoot === 'string' && path.isAbsolute(routing.localRoot) ? fs.realpathSync(routing.localRoot) : null;
@@ -78,17 +90,13 @@ export function createRepositoryRouter(config, { channelInfo, execute = command 
     if (channel.is_archived === true) throw new Error('Archived Slack channels cannot be routed to repositories.');
     if (channel.is_ext_shared === true || channel.is_ext_shared_channel === true || channel.is_shared === true) throw new Error('External or shared Slack channels cannot be routed to repositories.');
 
-    const jq = `[.[] | select((.name | ascii_downcase) == ${JSON.stringify(channelName.toLowerCase())}) | {id,name,full_name,owner:.owner.login,default_branch,archived,disabled,permissions:{push:.permissions.push}}] | @json`;
-    const raw = await gh(['api', '--hostname', 'github.com', '--method', 'GET', '/user/repos?per_page=100&affiliation=owner,collaborator,organization_member', '--paginate', '--jq', jq], signal);
-    let matches;
-    try {
-      matches = [];
-      for (const line of raw.split(/\r?\n/).filter(line => line.length > 0)) {
-        const page = JSON.parse(line);
-        if (!Array.isArray(page)) throw new Error();
-        matches.push(...page);
-      }
-    } catch { throw new Error('GitHub returned invalid repository metadata.'); }
+    // App installation tokens do not carry reliable permissions.push, so app mode lists installed repositories instead.
+    const app = appMode();
+    const endpoint = app ? '/installation/repositories?per_page=100' : '/user/repos?per_page=100&affiliation=owner,collaborator,organization_member';
+    const projection = app ? '{id,name,full_name,owner:.owner.login,default_branch,archived,disabled}' : '{id,name,full_name,owner:.owner.login,default_branch,archived,disabled,permissions:{push:.permissions.push}}';
+    const jq = `${app ? '[.repositories[] | select(' : '[.[] | select('}(.name | ascii_downcase) == ${JSON.stringify(channelName.toLowerCase())}) | ${projection}] | @json`;
+    const raw = await gh(['api', '--hostname', 'github.com', '--method', 'GET', endpoint, '--paginate', '--jq', jq], signal);
+    const matches = parsePages(raw);
 
     // Verify every exact-name result before filtering or deciding uniqueness.
     for (const candidate of matches) {
@@ -97,13 +105,13 @@ export function createRepositoryRouter(config, { channelInfo, execute = command 
           typeof candidate.full_name !== 'string' || !/^[^/]+\/[^/]+$/.test(candidate.full_name) || candidate.full_name.split('/')[1].toLowerCase() !== channelName.toLowerCase() ||
           typeof candidate.owner !== 'string' || candidate.owner !== candidate.full_name.split('/')[0] ||
           !validBranch(candidate.default_branch) || typeof candidate.archived !== 'boolean' || typeof candidate.disabled !== 'boolean' ||
-          typeof candidate.permissions?.push !== 'boolean') throw new Error('GitHub returned incomplete or inconsistent repository metadata.');
+          (!app && typeof candidate.permissions?.push !== 'boolean')) throw new Error('GitHub returned incomplete or inconsistent repository metadata.');
     }
     const eligibleOwners = matches.filter(repo => ownerAllowed(repo.owner, task.channel));
     if (eligibleOwners.length > 1) throw new Error(`More than one GitHub repository matches Slack channel #${channelName}; configure a channel owner hint.`);
     if (!eligibleOwners.length) throw new Error(`No GitHub repository matches Slack channel #${channelName} for an allowed owner.`);
     const repo = eligibleOwners[0];
-    if (!repo.permissions.push) throw new Error('The matching GitHub repository is not writable by the configured account.');
+    if (!app && !repo.permissions.push) throw new Error('The matching GitHub repository is not writable by the configured account.');
     if (repo.archived || repo.disabled) throw new Error('The matching GitHub repository is archived or disabled.');
     if (!await branchIsValid(repo.default_branch, signal)) throw new Error('GitHub repository has an invalid default branch.');
     const local = localRoot && pathExists(localPath(repo.name));
@@ -190,6 +198,11 @@ export function createRepositoryRouter(config, { channelInfo, execute = command 
     await git(['rev-parse', '--verify', `refs/remotes/origin/${repo.baseBranch}^{commit}`], target, signal);
     return { ...repo, path: target };
   }
+  async function requireInstalled(repo, signal) {
+    // githubId is a validated safe integer (verifyBound), so interpolating it into jq is safe.
+    const raw = await gh(['api', '--hostname', 'github.com', '--method', 'GET', '/installation/repositories?per_page=100', '--paginate', '--jq', `[.repositories[] | select(.id == ${repo.githubId}) | .id] | @json`], signal);
+    if (!parsePages(raw).includes(repo.githubId)) throw new Error('Bound GitHub repository is no longer included in the GitHub App installation.');
+  }
   async function prepare(task, signal) {
     requireRouting();
     checkSignal(signal);
@@ -201,7 +214,8 @@ export function createRepositoryRouter(config, { channelInfo, execute = command 
     try { metadata = JSON.parse(current); } catch { throw new Error('GitHub returned invalid bound repository metadata.'); }
     metadataObject(metadata, 'bound repository');
     if (metadata.id !== repo.githubId || metadata.full_name !== repo.github || metadata.default_branch !== repo.baseBranch) throw new Error('Bound GitHub repository identity or default branch changed; refusing to reroute this task.');
-    if (metadata.archived === true || metadata.disabled === true || metadata.permissions?.push !== true) throw new Error('Bound GitHub repository is no longer writable and active.');
+    if (metadata.archived === true || metadata.disabled === true || (!appMode() && metadata.permissions?.push !== true)) throw new Error('Bound GitHub repository is no longer writable and active.');
+    if (appMode()) await requireInstalled(repo, signal);
     const target = repo.storage === 'local' ? validateLocalPath(repo.github.split('/')[1]) : safeFinalPath(repo);
     if (repo.storage === 'local') {
       await validateLocal(repo, signal);
