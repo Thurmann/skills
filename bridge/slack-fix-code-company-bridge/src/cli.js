@@ -10,7 +10,7 @@ import { Store } from './store.js';
 import { createRunner } from './runner.js';
 import { getProvider, providerNames } from './providers/index.js';
 import { Bridge, processIdentity } from './bridge.js';
-import { command, validateRepository } from './git.js';
+import { command, validateRepository, configureGitHubAuth } from './git.js';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function mkdirPrivate(folder) { fs.mkdirSync(folder, { recursive: true, mode: 0o700 }); fs.chmodSync(folder, 0o700); }
@@ -128,6 +128,7 @@ async function main() {
   const configPath = findConfig(filename);
   loadEnvBeside(configPath);
   const config = loadConfig(configPath);
+  configureGitHubAuth(config);
   if (action === 'doctor') return doctor(config, runtimeOverride);
   if (action === 'start') return start(config, runtimeOverride);
   if (action === 'status' || action === 'outbox') {
