@@ -25,60 +25,86 @@ function runtimeUnavailable(config, runtime) {
   return `Runtime ${runtime} CLI is unavailable on this host (\`${config.runtimes?.[runtime]?.path || runtime} --version\` failed when the bridge started).`;
 }
 const resumeCommands = { claude: id => `claude --resume ${id} --fork-session`, codex: id => `codex resume ${id}` };
+// Formatted replies are { text, sections }: text is the plain notification fallback; sections are
+// bridge-written mrkdwn, where every interpolated value goes through esc() or code(), or plain text
+// for model and error output, which is never rendered as mrkdwn.
+const esc = value => escapeSlack(value, 3000);
+const code = value => '`' + esc(value).replace(/`/g, "'") + '`';
+const md = (...lines) => ({ mrkdwn: lines.filter(line => typeof line === 'string').join('\n') });
+const plain = text => ({ plain: String(text ?? '') });
+const PR_LINK = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/;
+const prLink = url => PR_LINK.test(url) ? `<${url}|PR #${url.slice(url.lastIndexOf('/') + 1)}>` : esc(url);
 // Tells the operator where a failed or interrupted attempt left its evidence and how to continue it.
 function recoveryHint(config, task, job) {
-  const lines = [];
+  const lines = ['*To continue*', `• \`retry\` reruns the request${task.branch ? ` on ${code(task.branch)}` : ''}; commits are kept`, '• or mention a correction to follow up'];
+  const last = job.sessions?.at(-1), resume = resumeCommands[task.runtime];
+  if (last && resume && task.worktree) lines.push('', `*Resume the ${esc(last.phase)} session locally*`, '```' + esc(`cd ${task.worktree}\n${resume(last.sessionId)}`) + '```');
   const outputDir = path.join(config.stateDir, 'artifacts', task.id, job.id);
-  if (fs.existsSync(outputDir)) lines.push(`Phase outputs and session IDs: ${outputDir}`);
-  const sessions = job.sessions || [];
-  if (sessions.length) lines.push(`Sessions (${task.runtime}): ${sessions.map(s => `${s.phase} ${s.sessionId}`).join(', ')}.`);
-  const last = sessions.at(-1), resume = resumeCommands[task.runtime];
-  if (last && resume && task.worktree) lines.push(`Open the last session (${last.phase}) locally: cd ${task.worktree} && ${resume(last.sessionId)}`);
-  lines.push(`To continue: mention retry to rerun the same request${task.branch ? ` on ${task.branch}` : ''} (existing commits are kept; phases start fresh sessions), or mention a correction to follow up.`);
-  return lines.join('\n');
+  if (fs.existsSync(outputDir)) lines.push('', 'Phase outputs and session IDs:', code(outputDir));
+  return md(...lines);
 }
 const unresolvedReview = job => job?.review && job.review.verdict !== 'pass' && job.review.findings.length ? job.review : null;
 function reviewFindings(task, job) {
   const review = unresolvedReview(job);
-  if (!review) return '';
-  const findings = review.findings.map((finding, i) => `${i + 1}. ${redactSecrets(String(finding)).slice(0, 1500)}`).join('\n');
-  return `Independent review (${review.verdict}): ${redactSecrets(review.summary).slice(0, 1500)}\nFindings:\n${findings}\nMention fix to have the implementer address these findings${task.branch ? ` on ${task.branch}` : ''}, followed by a fresh independent review.\n`;
-}
-function outbox(task, text, link) {
-  const entry = { id: randomUUID(), status: 'pending', channel: task.channel, threadTs: task.threadTs, text, attempts: 0, nextAttemptAt: 0, created: time() };
-  return link === undefined ? entry : { ...entry, link };
-}
-const PR_LINK = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/;
-// The body stays plain text (no mrkdwn); only the leading link block is mrkdwn.
-function prBlocks(entry) {
-  const body = safeText(entry.text, 11000);
-  const chunks = [];
-  let current = '';
-  for (const character of body) {
-    if (current.length + character.length > 3000) { chunks.push(current); current = ''; }
-    current += character;
-  }
-  if (current) chunks.push(current);
+  if (!review) return [];
+  const findings = review.findings.map((finding, i) => `${i + 1}. ${redactSecrets(String(finding)).slice(0, 1500)}`).join('\n\n');
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: `<${entry.link}|Open pull request>` } },
-    ...chunks.map(text => ({ type: 'section', text: { type: 'plain_text', text, emoji: false } }))
+    md(`*Independent review: ${esc(review.verdict.replace('_', ' '))}*`),
+    plain(`${redactSecrets(review.summary).slice(0, 1500)}\n\n${findings}`),
+    md(`Mention \`fix\` to address these findings${task.branch ? ` on ${code(task.branch)}` : ''}.`, 'A fresh independent review follows.')
   ];
 }
-const repositoryContext = task => `${task.channelName ? '#' + task.channelName + ' → ' : ''}${task.repository.github}`;
+// A message is plain text or { text, sections }; empty sections are dropped because Slack rejects them.
+function outbox(task, message) {
+  const { text, sections } = typeof message === 'string' ? { text: message } : message;
+  const entry = { id: randomUUID(), status: 'pending', channel: task.channel, threadTs: task.threadTs, text, attempts: 0, nextAttemptAt: 0, created: time() };
+  return sections ? { ...entry, sections: sections.filter(section => section && (section.mrkdwn ?? section.plain).trim()) } : entry;
+}
+// Slack limits section text to 3000 characters and a message to 50 blocks.
+function sectionBlocks(sections) {
+  const blocks = [];
+  for (const section of sections) {
+    if (section.mrkdwn !== undefined) { blocks.push({ type: 'section', text: { type: 'mrkdwn', text: safeText(section.mrkdwn, 3000) } }); continue; }
+    let current = '';
+    for (const character of safeText(section.plain, 11000)) {
+      if (current.length + character.length > 3000) { blocks.push({ type: 'section', text: { type: 'plain_text', text: current, emoji: false } }); current = ''; }
+      current += character;
+    }
+    if (current) blocks.push({ type: 'section', text: { type: 'plain_text', text: current, emoji: false } });
+  }
+  return blocks.slice(0, 50);
+}
+const repositoryContext = task => `${task.channelName ? esc('#' + task.channelName) + ' → ' : ''}${code(task.repository.github)}`;
 const estimate = job => job.precheck?.estimated_minutes ? `about ${job.precheck.estimated_minutes} min` : `unknown (${job.precheck ? 'precheck gave none' : 'precheck skipped'})`;
 function queued(task, job) {
-  return `Task ${task.id} queued. Provider: ${task.runtime}.${task.repository ? ' Repository: ' + repositoryContext(task) + '.' : ''}${job.requestedMode ? ' Mode: ' + job.requestedMode + ' (requested).' : ''} Results will return in this thread.`;
+  return { text: `Task ${task.id} queued.`, sections: [md(
+    `:hourglass: *Queued* · task ${code(task.id)}`,
+    `Provider: ${code(task.runtime)}`,
+    task.repository && `Repository: ${repositoryContext(task)}`,
+    job.requestedMode && `Mode: ${code(job.requestedMode)} (requested)`
+  )] };
 }
 // Repeats nothing from queued(): only what tick() learned since (repository, precheck mode, estimate).
 function acknowledgement(task, job, intervalMs) {
-  return `Task ${task.id} started.${job.repositoryAnnounced ? '' : ' Repository: ' + repositoryContext(task) + '.'}${job.precheck ? ' Mode: ' + job.mode + '.' : ''} Estimated time: ${estimate(job)}. Status updates follow every ${Math.max(1, Math.round(intervalMs / 60000))} min until the result.`;
+  return { text: `Task ${task.id} started.`, sections: [md(
+    ':hourglass_flowing_sand: *Started*',
+    !job.repositoryAnnounced && `Repository: ${repositoryContext(task)}`,
+    job.precheck && `Mode: ${code(job.mode)}`,
+    `Estimate: ${estimate(job)}`,
+    `Updates every ${Math.max(1, Math.round(intervalMs / 60000))} min`
+  )] };
 }
 function statusUpdate(task, job, started) {
-  return `Task ${task.id} still running: ${job.stage || job.status} (${Math.floor((time() - started) / 60000)} min elapsed; estimated ${estimate(job)}).`;
+  return { text: `Task ${task.id} still running.`, sections: [md(
+    `:hourglass_flowing_sand: *Still running* · ${code(job.stage || job.status)}`,
+    `${Math.floor((time() - started) / 60000)} min elapsed`,
+    `Estimate: ${estimate(job)}`
+  )] };
 }
-function precheckSummary(job) {
-  return job.precheck ? `Precheck: ${job.precheck.mode} — ${job.precheck.reason} Predicted logic files: ${job.precheck.predicted_files ?? 'unknown'}.` : `Precheck skipped: mode ${job.mode} requested explicitly.`;
-}
+// Status icons: pending while queued or running, green check on success, red cross on failure.
+const statusIcon = status => ({ queued: ':hourglass:', running: ':hourglass_flowing_sand:', succeeded: ':white_check_mark:', failed: ':x:', canceled: ':no_entry_sign:', interrupted: ':warning:' })[status] || ':grey_question:';
+// The precheck reason is model output, so it stays plain text.
+const precheckReason = job => job.precheck && plain(`Precheck: ${job.precheck.reason}`);
 // Reviewers sometimes wrap the verdict in prose ("Still reviewing…\n\n{...}"): take the last balanced object carrying a verdict key.
 function embeddedVerdict(text) {
   let found;
@@ -183,7 +209,7 @@ export class Bridge {
       const task = this.store.getTask(job.taskId);
       if (task) {
         task.status = 'interrupted'; task.cancelRequested = false; this.store.saveTask(task);
-        this.store.saveOutbox(outbox(task, `The bridge restarted during this task. Its branch/evidence were preserved; it was not automatically rerun.\n${recoveryHint(this.config, task, job)}`));
+        this.store.saveOutbox(outbox(task, { text: 'The bridge restarted during this task; it was not rerun.', sections: [md(':warning: *Interrupted*', 'The bridge restarted during this task.', 'Branch and evidence are preserved; it was not rerun.'), recoveryHint(this.config, task, job)] }));
       }
     }
     for (const entry of this.store.listOutbox('sending')) {
@@ -217,8 +243,34 @@ export class Bridge {
       else if ((c.repositoryRouting?.mode || 'aliases') !== 'channel' && !parsed.repo) return { accepted: respond('In alias mode, start a task with repo=<alias> | <request>.') };
       else parsed = { ...parsed, command: 'run' };
     }
-    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code <describe the change> (or [options] | <request>; the repository comes from this channel name).' : '@Fix Code repo=app | <describe the change>.') + ' In a task thread, a plain mention is a followup. Options go before | as [options] | <request> (run and followup are optional aliases): runtime=' + (c.availableRuntimes || [c.runtime]).join('|') + ' (default ' + c.runtime + '; run only), mode=fast|simple|medium|advanced (skips the automatic precheck; fast is for changes of at most 5 logic lines and verifies by compiling only), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... Also status, cancel, retry, and fix (after an independent review requests changes). New independent work needs a new top-level message.') };
-    if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with a new top-level @Fix Code <request> (or [options] | <request>) in channel mode, or repo=<alias> | <request> in legacy alias mode.') };
+    if (parsed.command === 'help') {
+      const channelMode = (c.repositoryRouting?.mode || 'aliases') === 'channel';
+      return { accepted: respond({ text: 'Fix Code help', sections: [md(
+        '*Start a task* with a new top-level message:',
+        code(channelMode ? '@Fix Code <describe the change>' : '@Fix Code repo=app | <describe the change>'),
+        channelMode && 'The repository comes from this channel name.',
+        '',
+        '*Options* go before the separator:',
+        code(`@Fix Code ${channelMode ? '' : 'repo=app '}[options] | <request>`),
+        `• ${code('runtime=' + (c.availableRuntimes || [c.runtime]).join('|'))} (default ${code(c.runtime)}; new tasks only)`,
+        `• ${code('mode=fast|simple|medium|advanced')} skips the precheck; ${code('fast')} is for at most 5 logic lines and only compiles`,
+        `• ${code('model=…')} or ${code('precheck_model=…')}, ${code('architect_model=…')}, ${code('implementer_model=…')}, ${code('reviewer_model=…')}`,
+        `• ${code('run')} and ${code('followup')} are optional aliases`,
+        '',
+        '*In a task thread*',
+        '• a plain mention is a follow-up',
+        `• ${code('status')}, ${code('cancel')}, ${code('retry')}`,
+        `• ${code('fix')} after an independent review requests changes`,
+        '',
+        'New independent work needs a new top-level message.'
+      )] }) };
+    }
+    if (parsed.command === 'status') return { accepted: respond(task ? { text: `Task ${task.id}: ${task.status}.`, sections: [md(
+      `${statusIcon(task.status)} *Status:* ${code(task.status)}`,
+      `Stage: ${code(task.stage || 'not started')}`,
+      `Branch: ${code(task.branch || 'pending')}`,
+      task.prUrl && `PR: ${prLink(task.prUrl)}`
+    )] } : 'No task is bound to this thread. Start with a new top-level @Fix Code <request> (or [options] | <request>) in channel mode, or repo=<alias> | <request> in legacy alias mode.') };
     if (parsed.command === 'cancel') {
       if (!task) return { accepted: respond('No task is bound to this thread.') };
       if (this.store.getJob(this.active?.jobId)?.taskId === id) {
@@ -364,7 +416,7 @@ export class Bridge {
         task.status = 'succeeded'; task.lastSummary = implementation.slice(0, 12000); task.cancelRequested = false; task.updated = time();
         job.status = 'succeeded'; job.pid = null; job.updated = time();
         this.store.saveTask(task); this.store.saveJob(job);
-        this.store.saveOutbox(outbox(task, `Task ${task.id} finished with no code changes; no PR was published.\n${precheckSummary(job)}\nMode: ${mode}.\n${implementation.slice(0, 6200)}`));
+        this.store.saveOutbox(outbox(task, { text: `Task ${task.id} finished with no code changes.`, sections: [md(':white_check_mark: *Finished with no code changes*', 'No PR was published.', `Mode: ${code(mode)}`), precheckReason(job), plain(implementation.slice(0, 3000))] }));
         return;
       }
       const files = (await this.git.command('git', ['diff', '--name-only', `${job.startCommit}..HEAD`, '--'], { cwd: task.worktree, signal: controller.signal })).split('\n').filter(Boolean);
@@ -425,12 +477,27 @@ export class Bridge {
       task.prUrl = prUrl; task.status = 'succeeded'; task.lastSummary = implementation.slice(0, 12000); task.cancelRequested = false; task.updated = time();
       job.status = 'succeeded'; job.pid = null; job.updated = time(); job.prUrl = prUrl;
       this.store.saveTask(task); this.store.saveJob(job);
-      this.store.saveOutbox(outbox(task, `Task ${task.id} finished with ${draft ? 'a draft PR' : 'a PR ready for review'}: ${prUrl}\nBranch: ${task.branch}\n${precheckSummary(job)}\n${outcome}\n${implementation.slice(0, 6200)}`, prUrl));
+      this.store.saveOutbox(outbox(task, { text: `Task ${task.id}: ${draft ? 'draft PR' : 'PR ready for review'} ${prUrl}`, sections: [
+        md(`:white_check_mark: *${prLink(prUrl)}* ${draft ? 'opened as draft' : 'ready for review'}`,
+          `Branch: ${code(task.branch)}`,
+          `Mode: ${code(mode)}${escalated ? ' (escalated from simple)' : ''}`,
+          `Review: ${reviewReason ? 'passed' : 'not required'}`,
+          ...(mode === 'fast' ? [`Changed: ${lines} logic lines in ${changed} files`, 'Tests: not run locally; CI runs them'] : [`Logic files: ${predicted ?? '?'} predicted, ${changed} changed`])),
+        draft && plain(`Draft because: ${draftReason}`),
+        precheckReason(job)
+      ] }));
     } catch (error) {
       job.status = controller.signal.aborted ? 'canceled' : 'failed'; job.pid = null; job.error = safeError(error); job.updated = time(); this.store.saveJob(job);
       if (task) {
         task.status = job.status; task.cancelRequested = false; task.updated = time(); this.store.saveTask(task);
-        this.store.saveOutbox(outbox(task, `Task ${task.id}: ${job.status}. ${job.error}\n${job.mode ? precheckSummary(job) + '\n' : ''}${reviewFindings(task, job)}Branch/evidence are preserved. Check the actual PR state before retrying if publication had started.\n${recoveryHint(this.config, task, job)}`));
+        this.store.saveOutbox(outbox(task, { text: `Task ${task.id}: ${job.status}. ${job.error}`, sections: [
+          md(`${statusIcon(job.status)} *${job.status === 'canceled' ? 'Canceled' : 'Failed'}*`),
+          plain(job.error),
+          md(job.mode && `Mode: ${code(job.mode)}`),
+          ...reviewFindings(task, job),
+          md('Branch and evidence are preserved.', 'If publishing had started, check the PR before retrying.'),
+          recoveryHint(this.config, task, job)
+        ] }));
       }
     } finally { clearInterval(statusTimer); this.active = null; this.working = false; }
   }
@@ -442,7 +509,7 @@ export class Bridge {
         entry.status = 'sending'; entry.attempts = (entry.attempts || 0) + 1; this.store.saveOutbox(entry);
         try {
           const payload = { channel: entry.channel, thread_ts: entry.threadTs, text: escapeSlack(entry.text).slice(0, 11000), mrkdwn: false, parse: 'none', link_names: false, unfurl_links: false, unfurl_media: false, client_msg_id: entry.id };
-          if (typeof entry.link === 'string' && PR_LINK.test(entry.link)) payload.blocks = prBlocks(entry);
+          if (Array.isArray(entry.sections)) payload.blocks = sectionBlocks(entry.sections);
           const result = await this.transport.post(payload);
           entry.status = 'sent'; entry.messageTs = result.ts; this.store.saveOutbox(entry);
         } catch (error) {
