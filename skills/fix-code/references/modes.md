@@ -1,10 +1,10 @@
 # Precheck and execution modes
 
-Every task runs in exactly one mode: **Simple**, **Medium**, or **Advanced**. The mode decides how many agents run, which models they use, and whether architect and reviewer passes are mandatory. Git, isolation, the full test suite gate, verification honesty, and PR delivery rules are identical in every mode.
+Every task runs in exactly one mode: **Fast**, **Simple**, **Medium**, or **Advanced**. The mode decides how many agents run, which models they use, and whether architect and reviewer passes are mandatory. Git, isolation, verification honesty, and PR delivery rules are identical in every mode; the full test suite gate applies in every mode except Fast, which verifies by compiling only (see Fast).
 
 ## Precheck
 
-Run the precheck before framing or design work. Classify inline (same rules and output, a few sentences, no separate agent) when: the human named a mode; the request is plainly trivial (a single obvious edit such as text, a color, a constant, a config line, or an ignore rule); or the caller already runs on the cheapest efficient model. Otherwise delegate to the cheapest efficient model at low effort.
+Run the precheck before framing or design work. Fast mode has no precheck (see Fast). Classify inline (same rules and output, a few sentences, no separate agent) when: the human named a mode; the request is plainly trivial (a single obvious edit such as text, a color, a constant, a config line, or an ignore rule); or the caller already runs on the cheapest efficient model. Otherwise delegate to the cheapest efficient model at low effort.
 
 1. If the human prompt names a mode (`mode=simple|medium|advanced` or equivalent plain language), use it, classify inline, and skip further classification. Still record a scope prediction.
 2. Otherwise, if not inline, delegate one short classification to the cheapest efficient model at low effort. Give it only the request text, the repository name, a top-level file listing, and the repository's primary language/stack. Do not give it the full transcript or ask it to read source files in depth.
@@ -21,13 +21,26 @@ confidence: high | medium | low
 ```
 
 4. Classify with these signals:
-   - **Simple:** one obvious location, 1-2 logic files, no new interfaces or dependencies, no risk flags. Examples: change a web element's color, fix a simple logic error, add a small self-contained feature or option.
-   - **Medium:** the default for everything that is neither Simple nor Advanced, e.g. about 3-15 logic files, a feature within the existing architecture even across several modules, multi-file refactoring, difficult logic, or one risk flag.
+   - **Simple:** small, localized edits in 1-4 logic files, no new interfaces or dependencies, no risk flags. Examples: change a web element's color, fix a simple logic error, add a small self-contained feature or option, or a one-line change repeated in a few files. (The precheck never selects Fast; only a human does.)
+   - **Medium:** the default for everything that is neither Simple nor Advanced, e.g. about 5-15 logic files, a feature within the existing architecture even across several modules, multi-file refactoring, difficult logic, or one risk flag.
    - **Advanced:** ONLY a new repository or project, a whole-repository refactor, a new architecture or data model, or two or more distinct risk flags (security, auth, data/migration, concurrency). Size or "cross-cutting" alone is not Advanced.
 5. Give an honest best guess and confidence; do not pick a higher mode to be safe. The caller applies exactly one uncertainty adjustment: low confidence together with a risk flag moves up one mode. Any risk flag still rules out Simple. Medium already adds an independent review when the change outgrows the prediction, so it is the safety net for uncertain cases.
 6. Report the mode, reason, and prediction in one line before further work. The precheck's prediction is the baseline for later escalation checks.
 
 The precheck is a routing decision, not a design. Do not spend strong-model tokens on it. If model selection is unavailable, the caller classifies with the same rules in a few sentences and says so. Record the precheck result next to the actual changed logic-file count in the report so mis-predictions can be calibrated over time.
+
+## Fast
+
+Optimized for the shortest wall-clock time on tiny changes. Selected only by an explicit human request (`mode=fast` or equivalent plain language); the precheck never chooses it.
+
+- **Budget:** at most 5 changed lines in logic files in total, spread over at most 4 logic files (for example one line in each of four files). Logic files have the same definition as in the precheck. Count a changed line once: per file, the larger of added and removed lines.
+- **No precheck.** Start the work at once: frame in a sentence, isolate, edit. No classification, no plan record, no architect.
+- Workspace: new branch in the existing checkout (in place), via `start --in-place`, like Simple.
+- One agent on the cheapest efficient model does the whole task in one pass, reading only the files it edits and what it needs to locate them.
+- **Compile-only verification:** no test runs, no pre-edit baseline. After the change, compile or build the project (for example `npm run build`, `tsc --noEmit`, `cargo check`, `go build ./...`); for a language without a build step, use its cheapest static check (a syntax check such as `node --check` or `python -m py_compile`, or the repository's `check`/lint script). It must succeed. Tests are left to the PR's CI: say in the PR and report that tests were not run locally and that CI verifies them. Never skip, delete, or weaken tests to make CI pass; a CI failure is fixed as a follow-up on the same branch.
+- **Reviewer rule:** no reviewer while the change is within 50% of the budget. Run a fresh reviewer on the diff and evidence if the change reaches at least 8 changed logic lines (5 + 50%, rounded up) or at least 6 logic files (4 + 50%). Between the budget and that threshold, publish without review and state that the budget was exceeded.
+- Fast never escalates to another mode automatically; a change that outgrows it gets the reviewer instead. A human can rerun or follow up in a higher mode.
+- Create the PR when done, as in every mode.
 
 ## Simple
 
@@ -38,7 +51,7 @@ Optimized for speed and the lowest token usage.
 - No architect and no reviewer. No multi-agent fan-out and no persistent plan record.
 - Keep context small: read only the files needed, and skip broad exploration.
 - Verify with the narrowest check that proves the behavior, such as the targeted test, a build, or one CLI/UI check of the changed element, and also run the complete test suite before and after the change (see the full test suite gate in SKILL.md). Keeping context small never means skipping the full suite.
-- **Escalate** to Medium (or Advanced if it qualifies) and report why if any of these appear: the change needs more than about 3 logic files, a new interface or dependency, a risk flag, a failing fix that is not obvious after one repair, or an unclear root cause. Keep the existing branch and commits; continue under the new mode's rules. If the task is still in place, relocate it to a worktree first when escalating to Advanced, and also when escalating to Medium: an escalation trigger counts as "bigger than predicted" (see Mode changes).
+- **Escalate** to Medium (or Advanced if it qualifies) and report why if any of these appear: the change needs more than about 6 logic files (4 + 50%), a new interface or dependency, a risk flag, a failing fix that is not obvious after one repair, or an unclear root cause. Keep the existing branch and commits; continue under the new mode's rules. If the task is still in place, relocate it to a worktree first when escalating to Advanced, and also when escalating to Medium: an escalation trigger counts as "bigger than predicted" (see Mode changes).
 
 ## Medium
 
@@ -69,6 +82,7 @@ Optimized for correctness. These rules are non-negotiable while the task is in A
 
 ## Mode changes
 
+- Fast is outside the escalation chain: it is never selected or left automatically (see Fast).
 - Escalation to a higher mode is always allowed. Announce it with the trigger and continue on the same branch; work already done counts but must satisfy the new mode's review rules. Escalation to Advanced while the task is still in place: commit, `relocate` to a worktree, then continue. Simple-to-Medium escalation also relocates, since an escalation trigger counts as "bigger than predicted" under the Medium workspace rule; after that, Medium relocates on any further trigger only if still in place.
 - Never downgrade automatically. Only an explicit human instruction can lower the mode.
 - The final report states the precheck result, any escalation and its trigger, and whether a reviewer ran and why.

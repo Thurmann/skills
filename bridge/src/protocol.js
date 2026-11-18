@@ -39,7 +39,7 @@ function parseModels(options, allowRepo, allowRuntime, runtimes) {
       if (!runtimes.includes(value)) fail(`runtime must be one of: ${runtimes.join(', ')}`);
       parsed.runtime = value;
     } else if (key === 'mode') {
-      if (!['simple', 'medium', 'advanced'].includes(value)) fail('mode must be simple, medium, or advanced');
+      if (!['fast', 'simple', 'medium', 'advanced'].includes(value)) fail('mode must be fast, simple, medium, or advanced');
       parsed.mode = value;
     } else {
       if (!value || /^-/.test(value) || /\s|[\u0000-\u001f\u007f-\u009f]/.test(value)) {
