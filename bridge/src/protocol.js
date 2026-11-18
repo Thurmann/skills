@@ -88,16 +88,21 @@ export function parseCommand(text, botUserId, options = {}) {
   const command = firstSpace < 0 ? commandText : commandText.slice(0, firstSpace);
   const rest = firstSpace < 0 ? '' : commandText.slice(firstSpace).trimStart();
 
-  if (command === 'run' || command === 'followup') {
-    if (!rest) fail(`${command} requires | followed by a request`);
+  const keyword = command === 'run' || command === 'followup';
+  // Without a keyword, options are recognised only when the first word is key=value and a separator follows; otherwise the text is a natural request.
+  const implicit = !keyword && /^[a-z_]+=/.test(command) && SEPARATOR.test(commandText);
+  if (keyword || implicit) {
+    const text = keyword ? rest : commandText;
+    if (keyword && !rest) fail(`${command} requires | followed by a request`);
     // Structured only when the text before the separator starts with an option (or is empty).
-    const delimiter = SEPARATOR.exec(rest);
-    const first = (delimiter ? rest.slice(0, delimiter.index) : rest).trim().split(/\s+/)[0];
+    const delimiter = SEPARATOR.exec(text);
+    const first = (delimiter ? text.slice(0, delimiter.index) : text).trim().split(/\s+/)[0];
     if (first && !/^[a-z_]+=/.test(first)) return naturalRequest(commandText);
-    const { options: argumentsList, request } = requestParts(rest, command);
-    const parsed = parseModels(argumentsList, command === 'run', command === 'run', options.runtimes || providerNames());
+    const { options: argumentsList, request } = requestParts(text, command);
+    // Implicit options carry no thread context, so the bridge decides between run and followup and the requireRepo check.
+    const parsed = parseModels(argumentsList, command !== 'followup', command !== 'followup', options.runtimes || providerNames());
     if (command === 'run' && options.requireRepo !== false && !parsed.repo) fail('run requires repo=<alias>');
-    return { command, ...(parsed.repo ? { repo: parsed.repo } : {}), ...(parsed.runtime ? { runtime: parsed.runtime } : {}), ...(parsed.mode ? { mode: parsed.mode } : {}), models: parsed.models, request };
+    return { command: keyword ? command : 'request', ...(parsed.repo ? { repo: parsed.repo } : {}), ...(parsed.runtime ? { runtime: parsed.runtime } : {}), ...(parsed.mode ? { mode: parsed.mode } : {}), models: parsed.models, request };
   }
   if (!['status', 'cancel', 'retry', 'fix', 'help'].includes(command) || rest) return naturalRequest(commandText);
   return { command };

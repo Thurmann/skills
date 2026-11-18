@@ -158,25 +158,27 @@ Start each independent task with a **new top-level mention**. `--`, `—` and `�
 In the default channel mode, no repository option is needed:
 
 ```text
-@Fix Code run | Fix the duplicate retry bug. Reproduce it first and verify the fix.
+@Fix Code Fix the duplicate retry bug. Reproduce it first and verify the fix.
 ```
 
 For example, a mention in `#billing-service` resolves the exact case-insensitive repository name `billing-service`. `repo=<alias>` is rejected in channel mode; it remains available only with `repositoryRouting.mode: "aliases"`. Neither mode accepts an arbitrary repository path from Slack or automatically creates a GitHub repository. An unknown or empty remote is a blocking error. New features and fixes in the selected repository use the same command.
 
-Older configurations that remain in aliases mode continue to use commands such as `@Fix Code run repo=app | Add CSV export.`
+Older configurations that remain in aliases mode continue to use commands such as `@Fix Code repo=app | Add CSV export.`
 
-A plain mention without `run` also works. At top level it starts a task with default models and the automatic precheck; in a task's thread it is a followup on that task:
+A plain mention with no options also works. At top level it starts a task with default models and the automatic precheck; in a task's thread it is a followup on that task:
 
 ```text
 @Fix Code can you fix this small error: blabla
 ```
 
-Plain mentions carry no options, so `key=value` text stays part of the request. Use the `run … |` or `followup … |` form to set options, for example `@Fix Code run mode=simple | Fix the typo.` Text after `run`/`followup` is read as options only when its first word looks like `key=value` (or it starts with the separator); otherwise the whole message, such as `run the linter and fix warnings`, is a plain request. Bare `status`, `cancel`, `retry` and `help` remain commands. In alias mode, start with `run repo=<alias> | <request>`.
+Plain mentions carry no options, so `key=value` text stays part of the request. To set options, put them before the separator (`|`); no keyword is needed. Options are read only when the first word looks like `key=value` and a separator follows; otherwise the whole message, such as `the linter reports key=value warnings`, is a plain request. For example, `@Fix Code mode=simple | Fix the typo.` starts a task at top level, or queues a followup in a task's thread. Bare `status`, `cancel`, `retry` and `help` remain commands. In alias mode, start with `repo=<alias> | <request>`.
+
+`run` and `followup` remain accepted as optional aliases: `@Fix Code run mode=simple | Fix the typo.` behaves the same as the form above, and `run` or `followup` may be used with or without options. In a task's thread, options before `|` apply to that task's followup. `repo=` and `runtime=` are accepted only on a new top-level task; in a thread they are rejected (`followup does not accept repo` or `followup does not accept runtime`).
 
 Override models **before** the separator (`|`):
 
 ```text
-@Fix Code run architect_model=gpt-6.1-sol implementer_model=gpt-6-luna | Add pagination.
+@Fix Code architect_model=gpt-6.1-sol implementer_model=gpt-6-luna | Add pagination.
 ```
 
 `model=<id>` overrides every role; a role-specific option takes precedence. `precheck_model=<id>` overrides only the precheck role. Models must be in the configured runtime allowlist.
@@ -184,8 +186,8 @@ Override models **before** the separator (`|`):
 Complexity modes are selected before the separator too:
 
 ```text
-@Fix Code run mode=advanced | Refactor the auth module.
-@Fix Code run mode=fast | Change the retry limit from 3 to 5.
+@Fix Code mode=advanced | Refactor the auth module.
+@Fix Code mode=fast | Change the retry limit from 3 to 5.
 ```
 
 - Without `mode=`, a read-only precheck classifies the task as `simple`, `medium`, or `advanced`. Unreadable precheck output falls back to `medium` with mandatory review. Missing confidence counts as `medium`. `risk_flags` hold only security, auth, data/migration, and concurrency; other context (public API, build/deploy) goes to `notes` and never affects the mode. Any risk flag forbids `simple`, two distinct risk categories make `advanced`, and low confidence together with a risk flag bumps one mode. Otherwise the model's mode is kept.
@@ -203,8 +205,9 @@ The implementer must end its output with exactly one line, `VERIFICATION: comple
 In that task's thread:
 
 ```text
+@Fix Code Also cover an empty result set.
+@Fix Code implementer_model=gpt-6.1-sol | Diagnose the unresolved race.
 @Fix Code followup | Also cover an empty result set.
-@Fix Code followup implementer_model=gpt-6.1-sol | Diagnose the unresolved race.
 @Fix Code status
 @Fix Code cancel
 @Fix Code retry
@@ -217,7 +220,7 @@ In that task's thread:
 - `cancel` stops the active process group and cancels queued follow-ups for that task. Existing commits/pushes are preserved.
 - `status` reports the saved task state; it is not a fresh forge/CI audit.
 - `help` returns command guidance.
-- `runtime=<claude|codex|gemini|opencode>` can be supplied on a new `run` when that provider is configured and its CLI is available on the host; otherwise the bridge replies that it is unavailable. The adapters are fixture-tested; verify each real CLI in a test channel before relying on it.
+- `runtime=<claude|codex|gemini|opencode>` can be supplied on a new top-level task when that provider is configured and its CLI is available on the host; otherwise the bridge replies that it is unavailable. The adapters are fixture-tested; verify each real CLI in a test channel before relying on it.
 
 Every PR the bridge creates or reuses gets the `AI`, `fix-code` and `slack-bridge` labels (`slack-bridge` marks PRs created through the bridge; created in the repository only if missing); if they cannot be applied, the PR is still created and its body says so.
 
