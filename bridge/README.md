@@ -206,10 +206,12 @@ In that task's thread:
 @Fix Code status
 @Fix Code cancel
 @Fix Code retry
+@Fix Code fix
 ```
 
 - `followup` queues a correction to the same change, branch, and task. The selected runtime/repository cannot change mid-thread; channel repository identity is pinned during its first repository lookup, before cloning.
 - `retry` explicitly requeues the last failed, interrupted, or canceled request after you inspect preserved work. It does not roll back effects.
+- `fix` is offered when independent review still requests changes (or blocks publication) after the bounded repair rounds. The failure message lists the reviewer's summary and numbered findings. `fix` requeues the same request on the same branch with those findings passed to the implementer, in at least `medium` mode without a precheck, so a fresh independent review always runs before publication.
 - `cancel` stops the active process group and cancels queued follow-ups for that task. Existing commits/pushes are preserved.
 - `status` reports the saved task state; it is not a fresh forge/CI audit.
 - `help` returns command guidance.
@@ -225,7 +227,7 @@ One global worker runs at a time. Independent Slack tasks are queued, preventing
 
 The original checkout, its dirty files, and protected branches remain outside the coding worktree. The guard checks the task branch, protected refs, base ancestry, remote routing, and history checkpoints. It detects violations; it is not a Git hook or a complete shell-security boundary. Do not authorize untrusted people to operate this local coding account.
 
-Each attempt uses fresh precheck/architecture/implementation/review phase sessions as its mode requires, with persisted task context, plan, result, and artifacts. It does **not** attach to or resume an arbitrary desktop/mobile chat. Session IDs are saved for audit. The bridge explicitly tells the skill to use the worktree it already prepared rather than creating a second one. The bridge always prepares a separate worktree in every mode, because it runs unattended and may reuse local checkouts; the skill's in-place option is not used by the bridge.
+Each attempt uses fresh precheck/architecture/implementation/review phase sessions as its mode requires, with persisted task context, plan, result, and artifacts. It does **not** attach to or resume an arbitrary desktop/mobile chat. Session IDs are saved for audit in `<stateDir>/artifacts/<task>/<job>/runner-*.json`. When a task fails or is interrupted, the Slack message lists that folder, each phase's session ID, and (for Claude and Codex) a command to open the last session locally from the task worktree, for example `cd <worktree> && claude --resume <session-id> --fork-session`. `--fork-session` leaves the bridge's transcript untouched. Claude transcripts are stored under `~/.claude/projects/<encoded worktree path>/<session-id>.jsonl`. The bridge explicitly tells the skill to use the worktree it already prepared rather than creating a second one. The bridge always prepares a separate worktree in every mode, because it runs unattended and may reuse local checkouts; the skill's in-place option is not used by the bridge.
 
 Implementation must leave ordinary commits and a clean worktree. In `advanced` mode, and in `medium` or escalated `simple` cases that meet the review rules above, the independent reviewer reads the real patch and checks evidence. Other `simple` and in-prediction `medium` jobs skip it, and the bridge's own verification is the only check before the PR. Requests for changes get at most the configured repair rounds. Blocked, malformed, or contradictory review verdicts prevent publication.
 

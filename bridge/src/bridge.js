@@ -24,6 +24,26 @@ function runtimeUnavailable(config, runtime) {
   if (!config.models?.[runtime] || !config.allowedModels?.[runtime]) return `Runtime ${runtime} is not configured: add models.${runtime} and allowedModels.${runtime} (or runtimes.${runtime}) to the bridge config.json, then restart the bridge.`;
   return `Runtime ${runtime} CLI is unavailable on this host (\`${config.runtimes?.[runtime]?.path || runtime} --version\` failed when the bridge started).`;
 }
+const resumeCommands = { claude: id => `claude --resume ${id} --fork-session`, codex: id => `codex resume ${id}` };
+// Tells the operator where a failed or interrupted attempt left its evidence and how to continue it.
+function recoveryHint(config, task, job) {
+  const lines = [];
+  const outputDir = path.join(config.stateDir, 'artifacts', task.id, job.id);
+  if (fs.existsSync(outputDir)) lines.push(`Phase outputs and session IDs: ${outputDir}`);
+  const sessions = job.sessions || [];
+  if (sessions.length) lines.push(`Sessions (${task.runtime}): ${sessions.map(s => `${s.phase} ${s.sessionId}`).join(', ')}.`);
+  const last = sessions.at(-1), resume = resumeCommands[task.runtime];
+  if (last && resume && task.worktree) lines.push(`Open the last session (${last.phase}) locally: cd ${task.worktree} && ${resume(last.sessionId)}`);
+  lines.push(`To continue: mention retry to rerun the same request${task.branch ? ` on ${task.branch}` : ''} (existing commits are kept; phases start fresh sessions), or mention a correction to follow up.`);
+  return lines.join('\n');
+}
+const unresolvedReview = job => job?.review && job.review.verdict !== 'pass' && job.review.findings.length ? job.review : null;
+function reviewFindings(task, job) {
+  const review = unresolvedReview(job);
+  if (!review) return '';
+  const findings = review.findings.map((finding, i) => `${i + 1}. ${redactSecrets(String(finding)).slice(0, 1500)}`).join('\n');
+  return `Independent review (${review.verdict}): ${redactSecrets(review.summary).slice(0, 1500)}\nFindings:\n${findings}\nMention fix to have the implementer address these findings${task.branch ? ` on ${task.branch}` : ''}, followed by a fresh independent review.\n`;
+}
 function outbox(task, text, link) {
   const entry = { id: randomUUID(), status: 'pending', channel: task.channel, threadTs: task.threadTs, text, attempts: 0, nextAttemptAt: 0, created: time() };
   return link === undefined ? entry : { ...entry, link };
@@ -141,7 +161,7 @@ export class Bridge {
       const task = this.store.getTask(job.taskId);
       if (task) {
         task.status = 'interrupted'; task.cancelRequested = false; this.store.saveTask(task);
-        this.store.saveOutbox(outbox(task, 'The bridge restarted during this task. Its branch/evidence were preserved. Inspect the work, then mention retry to continue; it was not automatically rerun.'));
+        this.store.saveOutbox(outbox(task, `The bridge restarted during this task. Its branch/evidence were preserved; it was not automatically rerun.\n${recoveryHint(this.config, task, job)}`));
       }
     }
     for (const entry of this.store.listOutbox('sending')) {
@@ -171,7 +191,7 @@ export class Bridge {
       else if ((c.repositoryRouting?.mode || 'aliases') !== 'channel') return { accepted: respond('In alias mode, start a task with run repo=<alias> | <request>.') };
       else parsed = { command: 'run', models: {}, request: parsed.request };
     }
-    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code <describe the change> (or run [options] | <request>; the repository comes from this channel name).' : '@Fix Code run repo=app | <describe the change>.') + ' In a task thread, a plain mention is a followup. Options need run [options] | <request> or followup [options] | <request> and go before |: runtime=' + (c.availableRuntimes || [c.runtime]).join('|') + ' (default ' + c.runtime + '; run only), mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... Also status, cancel, retry. New independent work needs a new top-level message.') };
+    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code <describe the change> (or run [options] | <request>; the repository comes from this channel name).' : '@Fix Code run repo=app | <describe the change>.') + ' In a task thread, a plain mention is a followup. Options need run [options] | <request> or followup [options] | <request> and go before |: runtime=' + (c.availableRuntimes || [c.runtime]).join('|') + ' (default ' + c.runtime + '; run only), mode=simple|medium|advanced (skips the automatic precheck), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... Also status, cancel, retry, and fix (after an independent review requests changes). New independent work needs a new top-level message.') };
     if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
     if (parsed.command === 'cancel') {
       if (!task) return { accepted: respond('No task is bound to this thread.') };
@@ -202,14 +222,15 @@ export class Bridge {
       task = { id, channel: e.channel, threadTs, owner: e.user, repositoryMode, repoAlias: parsed.repo || null, repository: repository ? { ...repository } : null, runtime, models, initialRequest: parsed.request, status: 'queued', created: time(), updated: time() };
     } else {
       if (!task) return { accepted: respond('No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
-      if (!['followup', 'retry'].includes(parsed.command)) return { accepted: respond('Unsupported command.') };
+      if (!['followup', 'retry', 'fix'].includes(parsed.command)) return { accepted: respond('Unsupported command.') };
       const unavailable = runtimeUnavailable(c, task.runtime);
       if (unavailable) return { accepted: respond(unavailable) };
-      if (parsed.command === 'retry') {
-        if (!terminal.has(task.status) || task.status === 'succeeded') return { accepted: respond('Retry applies only to failed, interrupted, or canceled tasks. Use followup for a correction.') };
+      if (parsed.command === 'retry' || parsed.command === 'fix') {
+        if (!terminal.has(task.status) || task.status === 'succeeded') return { accepted: respond(`${parsed.command === 'fix' ? 'Fix' : 'Retry'} applies only to failed, interrupted, or canceled tasks. Use followup for a correction.`) };
         if (this.store.jobsForTask(id).some(job => job.status === 'queued')) return { accepted: respond('This task already has a queued attempt.') };
         previous = this.store.jobsForTask(id).filter(job => terminal.has(job.status)).at(-1);
         if (!previous) return { accepted: respond('No previous request is available to retry.') };
+        if (parsed.command === 'fix' && !unresolvedReview(previous)) return { accepted: respond('Fix applies only after an independent review requested changes. Use retry to rerun the request, or mention a correction to follow up.') };
         parsed.request = previous.request;
       }
       try { task = { ...task, models: resolveModels(c, task.runtime, parsed.models, task.models) }; } catch (error) { return { accepted: respond(safeError(error)) }; }
@@ -218,6 +239,8 @@ export class Bridge {
       task.updated = time();
     }
     const job = { id: randomUUID(), taskId: id, request: parsed.request, requestedMode: parsed.mode || previous?.requestedMode || null, models: { ...task.models }, status: 'queued', created: time(), updated: time() };
+    // A fix carries the unresolved findings to the first implementer pass; at least medium mode without a precheck keeps independent review mandatory.
+    if (parsed.command === 'fix') Object.assign(job, { findings: unresolvedReview(previous).findings, requestedMode: higher(previous.mode || previous.requestedMode || 'medium', 'medium') });
     // A new channel-mode task has no repository until tick() resolves it; the acknowledgement adds it then.
     job.repositoryAnnounced = !!task.repository;
     const accepted = this.store.accept({ eventId, task, job, outbox: outbox(task, queued(task, job)) });
@@ -302,7 +325,7 @@ export class Bridge {
       statusTimer.unref?.();
       let plan = '';
       if (mode === 'advanced') { plan = await this.phase(task, job, 'architect', {}, controller, outputDir); fs.writeFileSync(path.join(outputDir, 'plan.txt'), plan, { mode: 0o600 }); }
-      let implementation = await this.phase(task, job, 'implementer', { plan, findings: [] }, controller, outputDir);
+      let implementation = await this.phase(task, job, 'implementer', { plan, findings: job.findings || [] }, controller, outputDir);
       fs.writeFileSync(path.join(outputDir, 'implementation-0.txt'), implementation, { mode: 0o600 });
       // A request that needs no code change (a question, already fixed, cannot reproduce) is a valid
       // outcome: report the implementer's answer instead of failing at publication.
@@ -351,6 +374,7 @@ export class Bridge {
           fs.writeFileSync(evidencePath, diff, { mode: 0o600 });
           review = reviewJSON(await this.phase(task, job, 'reviewer', { plan, implementation: implementation + '\nRead the full host-generated patch at: ' + evidencePath + '\nActual patch:\n' + diff.slice(0, 120000) }, controller, outputDir));
           fs.writeFileSync(path.join(outputDir, `review-${round}.json`), JSON.stringify(review, null, 2), { mode: 0o600 });
+          job.review = review; this.store.saveJob(job);
           if (review.verdict === 'pass') break;
           if (review.verdict === 'blocked') throw new Error(`Review blocked publication: ${review.summary}`);
         }
@@ -378,7 +402,7 @@ export class Bridge {
       job.status = controller.signal.aborted ? 'canceled' : 'failed'; job.pid = null; job.error = safeError(error); job.updated = time(); this.store.saveJob(job);
       if (task) {
         task.status = job.status; task.cancelRequested = false; task.updated = time(); this.store.saveTask(task);
-        this.store.saveOutbox(outbox(task, `Task ${task.id}: ${job.status}. ${job.error}\n${job.mode ? precheckSummary(job) + '\n' : ''}Branch/evidence are preserved. Check the actual PR state before retrying if publication had started. Mention status or retry in this thread.`));
+        this.store.saveOutbox(outbox(task, `Task ${task.id}: ${job.status}. ${job.error}\n${job.mode ? precheckSummary(job) + '\n' : ''}${reviewFindings(task, job)}Branch/evidence are preserved. Check the actual PR state before retrying if publication had started.\n${recoveryHint(this.config, task, job)}`));
       }
     } finally { clearInterval(statusTimer); this.active = null; this.working = false; }
   }
