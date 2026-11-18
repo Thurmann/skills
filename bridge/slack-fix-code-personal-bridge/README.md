@@ -13,7 +13,7 @@ This bridge uses Slack Socket Mode, a durable SQLite queue, and a local coding C
 - GitHub CLI authenticated (`gh auth status`) with access to the repositories you want the bridge to use. Channel routing requires push permission for the selected repository.
 - A Slack workspace where the app can read public/private channel metadata, plus your allowed user/channel/workspace IDs.
 
-The bridge reads the `fix-code` skill from this repository (`../skills/fix-code`, the same source that `scripts/install-skills.py` installs), so it never runs a stale private copy and does not depend on a user-global installation. Point `skillPath` at another reviewed installation if desired.
+The bridge reads the `fix-code` skill from this repository (`../../skills/fix-code`, the same source that `scripts/install-skills.py` installs), so it never runs a stale private copy and does not depend on a user-global installation. Point `skillPath` at another reviewed installation if desired.
 
 ## 1. Install dependencies and initialize private configuration
 
@@ -198,7 +198,7 @@ Complexity modes are selected before the separator too:
 - `medium`: no architect; independent review only when the bridge's review rules (below) require it.
 - `advanced`: architect → implementer → mandatory independent review with bounded repair rounds.
 
-The mode definitions, classification rules and review rules live in [`skills/fix-code/references/modes.md`](../skills/fix-code/references/modes.md), the single source of truth; the bridge implements them in code and the details above describe only what the bridge itself enforces. Change `modes.md` first and keep the bridge in line with it.
+The mode definitions, classification rules and review rules live in [`skills/fix-code/references/modes.md`](../../skills/fix-code/references/modes.md), the single source of truth; the bridge implements them in code and the details above describe only what the bridge itself enforces. Change `modes.md` first and keep the bridge in line with it.
 
 The implementer must end its output with exactly one line, `VERIFICATION: complete` (every check, including the complete test suite, ran and passed) or `VERIFICATION: incomplete: <reason>`. When that line says complete (and any required independent review passed), the bridge publishes a PR ready for review; if the line says incomplete or is missing, it publishes a draft PR and states the reason in the PR body and outcome line. Followups on an existing PR post the new job's outcome as a PR comment and move the PR between draft and ready to match (`gh pr ready`, with `--undo` to return it to draft). The final Slack message and the PR body state the mode, whether independent review ran, and the draft/ready decision. **Trade-off:** `fast` jobs under the review threshold, `simple` jobs, and `medium` jobs whose changes stay within the prediction, publish **without** independent review (a ready PR if verification is complete). Use `mode=advanced` when you want the full pipeline for a change. Logic files are changed files excluding tests, docs (`.md`/`.rst`/`.txt`, `docs/`) and lockfiles; predictions use the same definition. Each job records a calibration record (`calibration.json` in its artifact directory and on the job: the model's raw mode, mode after adjustment, final mode, predicted vs. changed/logic file counts, escalation, review) and the outcome line states predicted/actual logic files. Skill reading is per phase: precheck reads only the "Precheck" section of `modes.md`; architect, implementer and reviewer read only the references they need and never `model-policy.md` or `integrations.md`. Text after the separator is request data and cannot set runner flags or model options. Model selection uses explicit phase-level CLI invocations, rather than relying on nested model delegation.
 
@@ -228,7 +228,7 @@ A merged/closed PR needs a new top-level task and a new branch. A PR that is alr
 
 ## Execution and Git behavior
 
-One global worker runs at a time. Independent Slack tasks are queued, preventing simultaneous writers even across repositories. Each accepted task gets a unique isolated worktree using `../skills/fix-code/scripts/git_guard.py`.
+One global worker runs at a time. Independent Slack tasks are queued, preventing simultaneous writers even across repositories. Each accepted task gets a unique isolated worktree using `../../skills/fix-code/scripts/git_guard.py`.
 
 The original checkout, its dirty files, and protected branches remain outside the coding worktree. The guard checks the task branch, protected refs, base ancestry, remote routing, and history checkpoints. It detects violations; it is not a Git hook or a complete shell-security boundary. Do not authorize untrusted people to operate this local coding account.
 
@@ -270,7 +270,7 @@ Ctrl+C sends a graceful shutdown/cancel request. Do not delete worktrees or stat
 ```bash
 npm test
 npm run check
-python3 ../skills/fix-code/scripts/test_git_guard.py
+python3 ../../skills/fix-code/scripts/test_git_guard.py
 ```
 
 Tests use fake Slack transports/model executables and disposable Git repositories. GitHub publication is replaced with a local fixture. No live Slack messages, model inference, or real PRs are needed for these checks. The Git integration fixture verifies the explicit push refspec and PR reuse, not a network push.
