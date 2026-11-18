@@ -12,7 +12,7 @@ This bridge uses Slack Socket Mode, a durable SQLite queue, and a local coding C
 
 - macOS or Linux, Node.js **22.13+** (Node 24 LTS recommended), Python 3, and Git.
 - At least one supported coding CLI installed and authenticated: Claude Code, Codex (`codex login status`), Gemini CLI, or opencode.
-- GitHub CLI (`gh`) with access to the repositories you want the bridge to use. In user mode (the default) it must be authenticated (`gh auth status`), and channel routing requires push permission for the selected repository. In app mode (`githubAuth: "app"`) there is no `gh auth login`: `gh` and `git` get a token from `githubTokenFile`, the bound repository must be in the GitHub App installation, and you run `gh auth setup-git` once. See [GitHub App authentication](#github-app-authentication).
+- GitHub CLI (`gh`) with access to the repositories you want the bridge to use. In user mode (the default) it must be authenticated (`gh auth status`), and channel routing requires push permission for the selected repository. In app mode (`githubAuth: "app"`) there is no `gh auth login`: `gh` and `git` get a token from `githubTokenFile`, the bound repository must be in the GitHub App installation, and you run `gh auth setup-git` once with `GH_TOKEN` taken from that file (see below). See [GitHub App authentication](#github-app-authentication).
 - A Slack workspace where the app can read public/private channel metadata, plus your allowed user/channel/workspace IDs.
 
 The bridge reads the `fix-code` skill from this repository (`../../skills/fix-code`, the same source that `scripts/install-skills.py` installs), so it never runs a stale private copy and does not depend on a user-global installation. Point `skillPath` at another reviewed installation if desired.
@@ -129,7 +129,7 @@ Configuration, with the `runtimes` layout:
 }
 ```
 
-`env` lists extra environment variable names forwarded to that provider (uppercase names, never `SLACK_*`). Built-in provider variables (such as `OPENAI_API_KEY` or `GEMINI_API_KEY`) are always forwarded to their own provider only. The legacy layout (`codexPath`, `claudePath`, `models.<name>`, `allowedModels.<name>`) keeps working; `runtimes.<name>` overrides it. A provider counts as configured when it has models.
+`env` lists extra environment variable names forwarded to that provider (uppercase names, never `SLACK_*`, `GH_TOKEN` or `GITHUB_TOKEN`; the company copy rejects those GitHub names in every runtime). Built-in provider variables (such as `OPENAI_API_KEY` or `GEMINI_API_KEY`) are always forwarded to their own provider only. The legacy layout (`codexPath`, `claudePath`, `models.<name>`, `allowedModels.<name>`) keeps working; `runtimes.<name>` overrides it. A provider counts as configured when it has models.
 
 Default runtime precedence: `start --runtime <name>` (or `doctor --runtime`), then an explicit `"runtime"` in `config.json`, then the first configured provider in `runtimePriority` whose CLI answers `--version`. An explicit choice whose CLI is unavailable is an error; there is no silent fallback. Configured providers missing from `runtimePriority` are appended in registry order.
 
@@ -146,11 +146,17 @@ Instead of a personal `gh` login or a bot account, the company copy can act as a
 
 - `githubAuth` is `"user"` (default) or `"app"`. In app mode `githubTokenFile` is required, because installation tokens expire after one hour. The file must contain exactly one token.
 - In user mode, `githubTokenFile` is optional and then holds a personal access token. The file is read the same way, but no age check applies.
-- The bridge reads the token file on every `gh` and `git` spawn, so a refreshed token takes effect without a restart. In app mode a file older than 60 minutes fails the spawn with a message that names the path only and never the token. `doctor` warns at 55 minutes.
+- The bridge reads the token file on every `gh` and `git` spawn, so a refreshed token takes effect without a restart. In app mode a file older than 60 minutes fails the spawn with a message that names the path only and never the token. `doctor` fails its `GitHub token file` check once the file is older than 55 minutes, which leaves headroom before the 60-minute spawn limit.
 - With a token file set, the `GH_TOKEN` and `GITHUB_TOKEN` environment variables are ignored. Only `gh` and `git` receive a token. The Python Git helper, the coding CLIs and every other subprocess get none.
 - `forwardGitHubAuth` is rejected together with `githubTokenFile`. Coding runtimes never receive a GitHub token; only the bridge's publisher pushes and creates pull requests.
 - Token refresh is outside the bridge. A root-run systemd timer mints an installation token every 30 minutes from the app's private key and writes the file atomically with mode `0640`, group-owned by the bridge user. The private key stays root-only and is never readable by the bridge user.
-- Run `gh auth setup-git` once for the bridge user, so `git` asks `gh` for credentials. Do not run `gh auth login` in app mode.
+- Run this once as the bridge user, after the token timer has written the file, so `git` asks `gh` for credentials:
+
+  ```bash
+  GH_TOKEN="$(cat /run/fix-code-bridge/gh-token)" gh auth setup-git --hostname github.com
+  ```
+
+  This only writes git's credential helper (`!gh auth git-credential`) to the Git configuration. No token is stored there. At runtime `gh` reads the `GH_TOKEN` that the bridge supplies on each spawn, so no `gh` login is needed. Do not run `gh auth login` in app mode.
 - App permissions: Contents (read and write), Pull requests (read and write), Issues (read and write), and Metadata (read). Workflows (read and write) is optional and needed only if tasks may edit `.github/workflows/*`. Disable the webhook, because the bridge uses Slack Socket Mode. Install the app on selected repositories only; adding a repository to the installation onboards it.
 - Discovery and revalidation: in app mode, channel routing searches `/installation/repositories` rather than `/user/repos`. An installation token can read any public repository through `/repos/...`, so when a job is prepared the bridge also checks that the bound repository is in the installation. The archived, disabled, identity and default-branch checks are unchanged.
 - Commits are attributed to `<app-slug>[bot]`, with the email `<bot-id>+<app-slug>[bot]@users.noreply.github.com`. Set it as `user.name` and `user.email` in the bridge user's Git configuration.
@@ -213,7 +219,7 @@ npm start
 node src/cli.js start --runtime gemini   # optional: override the default runtime for this run
 ```
 
-`doctor` checks local tools/authentication and reports which default runtime would be selected. Only **one** configured provider needs to be usable (its CLI answers `--version`, plus `login status` for Codex); missing ones are reported as `unavailable` and do not fail the check. With `doctor --runtime <name>`, that provider must be usable. If an explicit `"runtime"` in `config.json` is not usable, doctor shows a warning, because `start` would then need `--runtime`. It also checks the skill/helper, repository routing, and presence of token-shaped values. With `githubTokenFile` set, it checks that the file is present and, in app mode, no more than 55 minutes old, and it replaces `gh auth status` with a GitHub App installation access check. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
+`doctor` checks local tools/authentication and reports which default runtime would be selected. Only **one** configured provider needs to be usable (its CLI answers `--version`, plus `login status` for Codex); missing ones are reported as `unavailable` and do not fail the check. With `doctor --runtime <name>`, that provider must be usable. If an explicit `"runtime"` in `config.json` is not usable, doctor shows a warning, because `start` would then need `--runtime`. It also checks the skill/helper, repository routing, and presence of token-shaped values. With `githubTokenFile` set, it checks that the file is present and, in app mode, no more than 55 minutes old (an older file fails). In app mode it then runs a GitHub App installation access check in place of `gh auth status`; in user mode `gh auth status` still runs, with the token file's value supplied as `GH_TOKEN`. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
 
 Leave the terminal open and keep the host awake/online. To keep a plugged-in Mac available for a supervised session, you can run the start command under `caffeinate`:
 

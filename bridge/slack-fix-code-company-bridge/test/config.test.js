@@ -122,6 +122,8 @@ test('runtimes layout overrides legacy keys, validates env and rejects unknown p
   assert.equal(c.runtimes.claude.path, '/opt/claude'); assert.deepEqual(c.runtimes.claude.env, ['MY_KEY']);
   assert.equal(c.models.claude.precheck, 'sonnet'); assert.deepEqual(c.allowedModels.codex, ['strong', 'cheap']);
   f.config.runtimes.claude.env = ['SLACK_BOT_TOKEN']; assert.throws(() => loadConfig(f.save()), /environment variable names/);
+  f.config.runtimes.claude.env = ['GH_TOKEN']; assert.throws(() => loadConfig(f.save()), /environment variable names/);
+  f.config.runtimes.claude.env = ['GITHUB_TOKEN']; assert.throws(() => loadConfig(f.save()), /environment variable names/);
   f.config.runtimes.claude.env = ['lower']; assert.throws(() => loadConfig(f.save()), /environment variable names/);
   f.config.runtimes.claude.env = [];
   f.config.runtimes.bogus = {}; assert.throws(() => loadConfig(f.save()), /Unknown runtime/); delete f.config.runtimes.bogus;

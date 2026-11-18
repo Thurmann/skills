@@ -17,7 +17,8 @@ function fixture(t) {
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
   const gh = path.join(bin, 'gh');
   const claude = path.join(bin, 'claude');
-  fs.writeFileSync(gh, `#!${process.execPath}\nconsole.log('1');\n`, { mode: 0o700 });
+  // Succeeds only when the bridge injected the token file's value as GH_TOKEN, so the "installation access ok" assertion proves injection.
+  fs.writeFileSync(gh, `#!${process.execPath}\nif (process.env.GH_TOKEN !== ${JSON.stringify(TOKEN)}) { console.error('not logged in'); process.exit(1); }\nconsole.log('1');\n`, { mode: 0o700 });
   fs.writeFileSync(claude, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   const cloneRoot = path.join(dir, 'clones');
   fs.mkdirSync(cloneRoot, { mode: 0o700 }); fs.chmodSync(cloneRoot, 0o700);
