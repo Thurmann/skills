@@ -1,4 +1,6 @@
-# Fix Code Slack Bridge
+# Fix Code Slack Bridge (company)
+
+This is the company copy of the Slack bridge, for a company-owned host. The [personal copy](../slack-fix-code-personal-bridge) is a separate project with its own config home, state and Slack app. This copy differs in four ways: its configuration lives in `~/.config/fix-code-company-bridge` (`FIX_CODE_COMPANY_CONFIG` selects another file); it can authenticate to GitHub as a GitHub App installation with short-lived tokens; it can run Claude through Vertex AI or Microsoft Foundry; and its Slack app is named "Fix Code (Company)". The task flow and safety rules are otherwise the same.
 
 Send a task from Slack on your phone, let a local coding runner use `fix-code`, and receive a pull request in the same Slack thread (ready for review when verification is complete, otherwise a draft).
 
@@ -10,7 +12,7 @@ This bridge uses Slack Socket Mode, a durable SQLite queue, and a local coding C
 
 - macOS or Linux, Node.js **22.13+** (Node 24 LTS recommended), Python 3, and Git.
 - At least one supported coding CLI installed and authenticated: Claude Code, Codex (`codex login status`), Gemini CLI, or opencode.
-- GitHub CLI authenticated (`gh auth status`) with access to the repositories you want the bridge to use. Channel routing requires push permission for the selected repository.
+- GitHub CLI (`gh`) with access to the repositories you want the bridge to use. In user mode (the default) it must be authenticated (`gh auth status`), and channel routing requires push permission for the selected repository. In app mode (`githubAuth: "app"`) there is no `gh auth login`: `gh` and `git` get a token from `githubTokenFile`, the bound repository must be in the GitHub App installation, and you run `gh auth setup-git` once. See [GitHub App authentication](#github-app-authentication).
 - A Slack workspace where the app can read public/private channel metadata, plus your allowed user/channel/workspace IDs.
 
 The bridge reads the `fix-code` skill from this repository (`../../skills/fix-code`, the same source that `scripts/install-skills.py` installs), so it never runs a stale private copy and does not depend on a user-global installation. Point `skillPath` at another reviewed installation if desired.
@@ -24,9 +26,9 @@ npm ci
 node src/cli.js init
 ```
 
-`init` creates `config.json` and `.env` in `~/.config/fix-code-bridge/` (or `$XDG_CONFIG_HOME/fix-code-bridge/`) with private permissions and preserves existing files. They live outside the repository, so updates and worktrees never touch them. Edit them locally; never paste tokens into a chat or commit them. `init --config /some/dir/config.json` creates them in another directory instead.
+`init` creates `config.json` and `.env` in `~/.config/fix-code-company-bridge/` (or `$XDG_CONFIG_HOME/fix-code-company-bridge/`) with private permissions and preserves existing files. They live outside the repository, so updates and worktrees never touch them. Edit them locally; never paste tokens into a chat or commit them. `init --config /some/dir/config.json` creates them in another directory instead.
 
-Every command finds its configuration in this order: `--config <path>`, `FIX_CODE_CONFIG`, `./config.json` in the current directory (older setups), then `~/.config/fix-code-bridge/config.json`. The `.env` next to the chosen `config.json` is loaded automatically; variables already set in the environment win. Relative paths in `config.json`, such as `stateDir: "./state"`, resolve against the config file's directory, so state also lives in `~/.config/fix-code-bridge/state` by default. Without `skillPath`, the bridge uses the repository's `skills/fix-code` next to the code it runs from; set it (absolute, or relative to the config file) only to use another reviewed installation.
+Every command finds its configuration in this order: `--config <path>`, `FIX_CODE_COMPANY_CONFIG`, `./config.json` in the current directory (older setups), then `~/.config/fix-code-company-bridge/config.json`. The `.env` next to the chosen `config.json` is loaded automatically; variables already set in the environment win. Relative paths in `config.json`, such as `stateDir: "./state"`, resolve against the config file's directory, so state also lives in `~/.config/fix-code-company-bridge/state` by default. Without `skillPath`, the bridge uses the repository's `skills/fix-code` next to the code it runs from; set it (absolute, or relative to the config file) only to use another reviewed installation.
 
 ## 2. Create the Slack app
 
@@ -34,7 +36,7 @@ Every command finds its configuration in this order: `--config <path>`, `FIX_COD
 2. Paste/import `slack-app-manifest.json` from this project.
 3. Check that Socket Mode is enabled. Under **Basic Information → App-Level Tokens**, generate an app token with `connections:write`.
 4. Install the app into the workspace and copy its Bot User OAuth Token from **OAuth & Permissions**.
-5. Put the app token (`xapp-...`) and bot token (`xoxb-...`) into `~/.config/fix-code-bridge/.env` locally:
+5. Put the app token (`xapp-...`) and bot token (`xoxb-...`) into `~/.config/fix-code-company-bridge/.env` locally:
 
    ```dotenv
    SLACK_BOT_TOKEN=your-local-bot-token
@@ -70,7 +72,7 @@ Replace every placeholder in the generated configuration:
 - `allowedModels`: explicit override allowlists, validated against the models you can actually run.
 - `statusIntervalMs` (optional): how often a running task posts a status update in its thread. Default `300000` (5 minutes).
 
-The generated example uses channel routing and does not need a `repositories` alias map. The default clone root is `<stateDir>/repositories`. A channel name such as `billing-service` selects only a repository whose GitHub repository name matches `billing-service`, ignoring case. The bridge gets the channel's authoritative name and ID from Slack `conversations.info` and searches all accessible GitHub repositories using paginated `gh` results, including repositories owned by you, shared with you, or visible through an organization. It requires push permission before starting work.
+The generated example uses channel routing and does not need a `repositories` alias map. The default clone root is `<stateDir>/repositories`. A channel name such as `billing-service` selects only a repository whose GitHub repository name matches `billing-service`, ignoring case. The bridge gets the channel's authoritative name and ID from Slack `conversations.info` and searches all accessible GitHub repositories using paginated `gh` results, including repositories owned by you, shared with you, or visible through an organization. It requires push permission before starting work. In app mode, discovery lists the repositories in the GitHub App installation instead, and the write check is installation membership with Contents write.
 
 If multiple accessible repositories have the same name, use `allowedOwners` to narrow the candidate set or set a `channelOwners` hint for that channel. A hint must also be allowed when `allowedOwners` is nonempty. The bridge never picks a default owner and never guesses by converting dots, hyphens, or other punctuation. Missing, ambiguous, read-only, archived, or changed repository identity blocks the task before coding. An empty or unknown remote does not cause a repository to be created automatically.
 
@@ -100,7 +102,7 @@ The example selects GPT-6.1 Sol for architecture/review, and GPT-6 Luna for prec
 
 `allowNetwork: true` permits configured Codex workspace networking and bridge fetch/push/PR operations. With it false, the bridge cannot finish PR delivery. Claude's network policy is an instruction here, not an enforced network sandbox. No runtime is launched with approval/sandbox bypass flags. CLI actions requiring an unavailable interactive approval fail and preserve the task.
 
-Keep `stateDir` private and outside the configured source repositories. It contains the task database, private evidence, and runner session IDs. Task worktrees are stored separately under `~/workspace/worktrees/<repository-directory-name>/<worktree-name>`. Do not delete state while tasks exist. Use a dedicated coding account/container if you need stronger separation: removing Slack tokens from child environments does not prevent processes under the same OS user from reading accessible files.
+Keep `stateDir` private and outside the configured source repositories. It contains the task database, private evidence, and runner session IDs. Task worktrees are stored separately under `~/workspace/worktrees/<repository-directory-name>/<worktree-name>`. The personal and company copies on one host share this root. An existing worktree directory without a matching guard checkpoint is refused, never reused. Do not delete state while tasks exist. Use a dedicated coding account/container if you need stronger separation: removing Slack tokens from child environments does not prevent processes under the same OS user from reading accessible files.
 
 ## Providers
 
@@ -133,6 +135,76 @@ Default runtime precedence: `start --runtime <name>` (or `doctor --runtime`), th
 
 **Behavior change:** with both Claude and Codex configured and no explicit `runtime`, the default is now `claude` (it was `codex`). Set `"runtime": "codex"` to keep the old behavior. Tasks keep the runtime they started with.
 
+## GitHub App authentication
+
+Instead of a personal `gh` login or a bot account, the company copy can act as a GitHub App. Set these in `config.json`:
+
+```json
+"githubAuth": "app",
+"githubTokenFile": "/run/fix-code-bridge/gh-token"
+```
+
+- `githubAuth` is `"user"` (default) or `"app"`. In app mode `githubTokenFile` is required, because installation tokens expire after one hour. The file must contain exactly one token.
+- In user mode, `githubTokenFile` is optional and then holds a personal access token. The file is read the same way, but no age check applies.
+- The bridge reads the token file on every `gh` and `git` spawn, so a refreshed token takes effect without a restart. In app mode a file older than 60 minutes fails the spawn with a message that names the path only and never the token. `doctor` warns at 55 minutes.
+- With a token file set, the `GH_TOKEN` and `GITHUB_TOKEN` environment variables are ignored. Only `gh` and `git` receive a token. The Python Git helper, the coding CLIs and every other subprocess get none.
+- `forwardGitHubAuth` is rejected together with `githubTokenFile`. Coding runtimes never receive a GitHub token; only the bridge's publisher pushes and creates pull requests.
+- Token refresh is outside the bridge. A root-run systemd timer mints an installation token every 30 minutes from the app's private key and writes the file atomically with mode `0640`, group-owned by the bridge user. The private key stays root-only and is never readable by the bridge user.
+- Run `gh auth setup-git` once for the bridge user, so `git` asks `gh` for credentials. Do not run `gh auth login` in app mode.
+- App permissions: Contents (read and write), Pull requests (read and write), Issues (read and write), and Metadata (read). Workflows (read and write) is optional and needed only if tasks may edit `.github/workflows/*`. Disable the webhook, because the bridge uses Slack Socket Mode. Install the app on selected repositories only; adding a repository to the installation onboards it.
+- Discovery and revalidation: in app mode, channel routing searches `/installation/repositories` rather than `/user/repos`. An installation token can read any public repository through `/repos/...`, so when a job is prepared the bridge also checks that the bound repository is in the installation. The archived, disabled, identity and default-branch checks are unchanged.
+- Commits are attributed to `<app-slug>[bot]`, with the email `<bot-id>+<app-slug>[bot]@users.noreply.github.com`. Set it as `user.name` and `user.email` in the bridge user's Git configuration.
+
+Setting `githubAuth` to `"user"` keeps the personal-account behavior from earlier sections, with no age check on the token file.
+
+## Claude via Vertex AI or Microsoft Foundry
+
+A company deployment can run Claude through its cloud provider. The bot then needs no model API key. Put the non-secret settings in the bridge's service environment (an `EnvironmentFile` read by systemd), and list their names under `runtimes.claude.env` so the bridge forwards them to the Claude CLI. Other variables are not forwarded.
+
+For Vertex AI:
+
+```dotenv
+CLAUDE_CODE_USE_VERTEX=1
+ANTHROPIC_VERTEX_PROJECT_ID=your-gcp-project
+# global, a multi-region such as eu or us, or a region such as europe-west1
+CLOUD_ML_REGION=eu
+```
+
+For Microsoft Foundry:
+
+```dotenv
+CLAUDE_CODE_USE_FOUNDRY=1
+# the resource name only, not a URL
+ANTHROPIC_FOUNDRY_RESOURCE=your-foundry-resource
+# only when the VM uses a user-assigned managed identity
+AZURE_CLIENT_ID=your-identity-client-id
+```
+
+Both providers need the model pins below. On them the `opus`, `sonnet` and `haiku` aliases resolve to older models than on the Anthropic API. Keep the aliases in `models` and `allowedModels`, and pin the model each alias means:
+
+```dotenv
+ANTHROPIC_DEFAULT_OPUS_MODEL=...
+ANTHROPIC_DEFAULT_SONNET_MODEL=...
+ANTHROPIC_DEFAULT_HAIKU_MODEL=...
+```
+
+On Vertex AI, use the exact model versions that are enabled in your location. On Foundry, each value must be the deployment name you chose for that model.
+
+Forward all nine names in `config.json`:
+
+```json
+"claude": {
+  "path": "claude",
+  "env": ["CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
+          "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_FOUNDRY_RESOURCE", "AZURE_CLIENT_ID",
+          "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"]
+}
+```
+
+Credentials come from the host's identity, never from key files. On Vertex AI the VM's service account is used through Application Default Credentials and needs `roles/aiplatform.user` on the project. On Foundry the VM's managed identity is used through Entra ID and needs Cognitive Services User or Foundry User on the resource. Do not set `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_FOUNDRY_API_KEY` or `ANTHROPIC_FOUNDRY_AUTH_TOKEN`, and do not create a service-account key file.
+
+`doctor` checks only that the CLI runs. Test a real task in a dedicated channel with `mode=simple`. A "model not found" error means the model is not enabled in that location (or, on Foundry, the deployment name does not match). For 429 errors, raise the Vertex quota or try `CLOUD_ML_REGION=global`.
+
 ## 4. Run diagnostics, then connect
 
 ```bash
@@ -141,7 +213,7 @@ npm start
 node src/cli.js start --runtime gemini   # optional: override the default runtime for this run
 ```
 
-`doctor` checks local tools/authentication and reports which default runtime would be selected. Only **one** configured provider needs to be usable (its CLI answers `--version`, plus `login status` for Codex); missing ones are reported as `unavailable` and do not fail the check. With `doctor --runtime <name>`, that provider must be usable. If an explicit `"runtime"` in `config.json` is not usable, doctor shows a warning, because `start` would then need `--runtime`. It also checks the skill/helper, repository routing, and presence of token-shaped values. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
+`doctor` checks local tools/authentication and reports which default runtime would be selected. Only **one** configured provider needs to be usable (its CLI answers `--version`, plus `login status` for Codex); missing ones are reported as `unavailable` and do not fail the check. With `doctor --runtime <name>`, that provider must be usable. If an explicit `"runtime"` in `config.json` is not usable, doctor shows a warning, because `start` would then need `--runtime`. It also checks the skill/helper, repository routing, and presence of token-shaped values. With `githubTokenFile` set, it checks that the file is present and, in app mode, no more than 55 minutes old, and it replaces `gh auth status` with a GitHub App installation access check. It makes no model calls and sends no Slack messages. Actual token validity/workspace binding is checked at connection time. Actual model availability is checked when a phase is invoked.
 
 Leave the terminal open and keep the host awake/online. To keep a plugged-in Mac available for a supervised session, you can run the start command under `caffeinate`:
 

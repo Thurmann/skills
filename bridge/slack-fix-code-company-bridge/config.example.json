@@ -15,12 +15,15 @@
   "stateDir": "./state",
   "pythonPath": "python3",
   "ghPath": "gh",
+  "githubAuth": "app",
+  "githubTokenFile": "/run/fix-code-bridge/gh-token",
   "allowNetwork": true,
   "repositoryRouting": {
     "mode": "channel",
     "cloneRoot": "./state/repositories",
-    "localRoot": "~/workspace",
-    "allowedOwners": [],
+    "allowedOwners": [
+      "your-org"
+    ],
     "channelOwners": {}
   },
   "timeoutMs": 1800000,
@@ -38,6 +41,17 @@
         "opus",
         "sonnet",
         "haiku"
+      ],
+      "env": [
+        "CLAUDE_CODE_USE_VERTEX",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "CLOUD_ML_REGION",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_FOUNDRY_RESOURCE",
+        "AZURE_CLIENT_ID",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL"
       ]
     },
     "codex": {
