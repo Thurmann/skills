@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { Bridge, parsePrecheck, isLogicFile, readonlySnapshot } from '../src/bridge.js';
+import { Bridge, parsePrecheck, isLogicFile, readonlySnapshot, reviewJSON } from '../src/bridge.js';
 import { Store } from '../src/store.js';
 import { safeText } from '../src/protocol.js';
 
@@ -136,6 +136,14 @@ test('failed or contradictory review never publishes', async t => {
     assert.equal(f.publications(), 0);
     assert.equal(f.store.listTasks()[0].status, 'failed');
   }
+});
+
+test('reviewJSON extracts a verdict wrapped in prose', () => {
+  const verdict = { verdict: 'changes_requested', summary: 'Uses {braces} and "quotes"', findings: ['fix } here'] };
+  assert.deepEqual(reviewJSON(`Still reviewing the diff. Checking a {state} overlap first.\n\n${JSON.stringify(verdict)}`), verdict);
+  assert.deepEqual(reviewJSON('Draft: {"verdict":"pass","summary":"x","findings":[]}\nFinal:\n```json\n' + JSON.stringify(verdict) + '\n```'), verdict);
+  assert.throws(() => reviewJSON('No verdict here {"summary":"x"}'), /did not return a valid verdict/);
+  assert.throws(() => reviewJSON('Prose {"verdict":"pass"}'), /verdict was incomplete/);
 });
 
 test('repair loop is bounded and uses cheap model before a fresh review', async t => {
