@@ -142,3 +142,23 @@ test('runtime accepts every registered provider and rejects unknown names', () =
   assert.equal(parseCommand('<@U123ABC> run repo=x runtime=gemini -- go', BOT, { runtimes: ['gemini'] }).runtime, 'gemini');
   assert.throws(() => parseCommand('<@U123ABC> run repo=x runtime=codex -- go', BOT, { runtimes: ['gemini'] }), /runtime must be one of: gemini/);
 });
+
+test('options without run or followup parse as requests before a separator', () => {
+  assert.deepEqual(parseCommand('<@U123ABC> mode=fast | Change X', BOT), { command: 'request', mode: 'fast', models: {}, request: 'Change X' });
+  assert.deepEqual(parseCommand('<@U123ABC> repo=demo runtime=claude model=opus architect_model=sonnet -- please use model=ignored', BOT), {
+    command: 'request', repo: 'demo', runtime: 'claude', models: { all: 'opus', architect: 'sonnet' }, request: 'please use model=ignored',
+  });
+  assert.deepEqual(parseCommand('<@U123ABC> mode=simple — fix the bug', BOT), { command: 'request', mode: 'simple', models: {}, request: 'fix the bug' });
+  assert.deepEqual(parseCommand('<@U123ABC> mode=simple | x', BOT, { requireRepo: true }), { command: 'request', mode: 'simple', models: {}, request: 'x' });
+});
+
+test('key=value text without a separator stays a natural request with the full text', () => {
+  assert.deepEqual(parseCommand('<@U123ABC> mode=fast Change X', BOT), { command: 'request', models: {}, request: 'mode=fast Change X' });
+  assert.deepEqual(parseCommand('<@U123ABC> status mode=fast | x', BOT), { command: 'request', models: {}, request: 'status mode=fast | x' });
+});
+
+test('unknown or invalid options without run or followup throw', () => {
+  assert.throws(() => parseCommand('<@U123ABC> foo=bar | Change X', BOT), /Unknown argument: foo=bar/);
+  assert.throws(() => parseCommand('<@U123ABC> mode=expert | Change X', BOT), /mode must be fast, simple, medium, or advanced/);
+  assert.throws(() => parseCommand('<@U123ABC> mode=fast mode=simple | Change X', BOT), /Duplicate option: mode/);
+});

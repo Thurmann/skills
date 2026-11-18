@@ -209,12 +209,16 @@ export class Bridge {
     let task = this.store.getTask(id), previous;
     if (task && task.owner !== e.user && !c.operators.includes(e.user)) return { accepted: respond('Only this task’s owner or a configured operator can control it.') };
     if (parsed.command === 'request') {
-      if (task) parsed = { command: 'followup', models: {}, request: parsed.request };
-      else if ((c.repositoryRouting?.mode || 'aliases') !== 'channel') return { accepted: respond('In alias mode, start a task with run repo=<alias> | <request>.') };
-      else parsed = { command: 'run', models: {}, request: parsed.request };
+      if (task) {
+        if (parsed.repo) return { accepted: respond('followup does not accept repo') };
+        if (parsed.runtime) return { accepted: respond('followup does not accept runtime') };
+        parsed = { ...parsed, command: 'followup' };
+      }
+      else if ((c.repositoryRouting?.mode || 'aliases') !== 'channel' && !parsed.repo) return { accepted: respond('In alias mode, start a task with repo=<alias> | <request>.') };
+      else parsed = { ...parsed, command: 'run' };
     }
-    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code <describe the change> (or run [options] | <request>; the repository comes from this channel name).' : '@Fix Code run repo=app | <describe the change>.') + ' In a task thread, a plain mention is a followup. Options need run [options] | <request> or followup [options] | <request> and go before |: runtime=' + (c.availableRuntimes || [c.runtime]).join('|') + ' (default ' + c.runtime + '; run only), mode=fast|simple|medium|advanced (skips the automatic precheck; fast is for changes of at most 5 logic lines and verifies by compiling only), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... Also status, cancel, retry, and fix (after an independent review requests changes). New independent work needs a new top-level message.') };
-    if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
+    if (parsed.command === 'help') return { accepted: respond('Start a new task: ' + ((c.repositoryRouting?.mode || 'aliases') === 'channel' ? '@Fix Code <describe the change> (or [options] | <request>; the repository comes from this channel name).' : '@Fix Code repo=app | <describe the change>.') + ' In a task thread, a plain mention is a followup. Options go before | as [options] | <request> (run and followup are optional aliases): runtime=' + (c.availableRuntimes || [c.runtime]).join('|') + ' (default ' + c.runtime + '; run only), mode=fast|simple|medium|advanced (skips the automatic precheck; fast is for changes of at most 5 logic lines and verifies by compiling only), precheck_model=..., architect_model=..., implementer_model=..., reviewer_model=... or model=.... Also status, cancel, retry, and fix (after an independent review requests changes). New independent work needs a new top-level message.') };
+    if (parsed.command === 'status') return { accepted: respond(task ? `Task ${task.id}: ${task.status}. Stage: ${task.stage || 'not started'}. Branch: ${task.branch || 'pending'}. ${task.prUrl || ''}` : 'No task is bound to this thread. Start with a new top-level @Fix Code <request> (or [options] | <request>) in channel mode, or repo=<alias> | <request> in legacy alias mode.') };
     if (parsed.command === 'cancel') {
       if (!task) return { accepted: respond('No task is bound to this thread.') };
       if (this.store.getJob(this.active?.jobId)?.taskId === id) {
@@ -243,7 +247,7 @@ export class Bridge {
       try { models = resolveModels(c, runtime, parsed.models); } catch (error) { return { accepted: respond(safeError(error)) }; }
       task = { id, channel: e.channel, threadTs, owner: e.user, repositoryMode, repoAlias: parsed.repo || null, repository: repository ? { ...repository } : null, runtime, models, initialRequest: parsed.request, status: 'queued', created: time(), updated: time() };
     } else {
-      if (!task) return { accepted: respond('No task is bound to this thread. Start with run | <request> in channel mode, or run repo=<alias> | <request> in legacy alias mode.') };
+      if (!task) return { accepted: respond('No task is bound to this thread. Start with a new top-level @Fix Code <request> (or [options] | <request>) in channel mode, or repo=<alias> | <request> in legacy alias mode.') };
       if (!['followup', 'retry', 'fix'].includes(parsed.command)) return { accepted: respond('Unsupported command.') };
       const unavailable = runtimeUnavailable(c, task.runtime);
       if (unavailable) return { accepted: respond(unavailable) };

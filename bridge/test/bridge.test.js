@@ -707,7 +707,53 @@ test('alias mode: a plain top-level mention replies with the alias-mode hint and
   assert.equal(accepted.accepted, true);
   assert.equal(f.store.listJobs().length, 0);
   assert.equal(f.store.listTasks().length, 0);
-  assert.match(f.store.listOutbox()[0].text, /In alias mode, start a task with run repo=<alias>/);
+  assert.match(f.store.listOutbox()[0].text, /In alias mode, start a task with repo=<alias>/);
+});
+
+test('top-level implicit options start a task with the mode and models applied', async t => {
+  const f = fixture(t, { run: modeRun(pre('advanced')) }); channelMode(f);
+  const accepted = await f.bridge.receive(event('<@UBOT> mode=fast implementer_model=strong | rename a flag'));
+  assert.equal(accepted.accepted, true);
+  const task = f.store.getTask(accepted.taskId);
+  assert.equal(task.initialRequest, 'rename a flag');
+  assert.equal(task.models.implementer, 'strong');
+  assert.equal(f.store.listJobs()[0].requestedMode, 'fast');
+  assert.equal((await f.bridge.receive({ ...event('<@UBOT> repo=app | rename a flag', { ts: '124.1' }), event_id: 'Ev2' })).accepted, true);
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /Repository context comes from this channel name/.test(p.text)));
+});
+
+test('in-thread implicit options queue a followup with the mode applied', async t => {
+  const f = fixture(t, { run: modeRun(pre('advanced')) }); channelMode(f);
+  const started = await f.bridge.receive(event('<@UBOT> can you fix this small error: blabla'));
+  const followup = await f.bridge.receive({ ...event('<@UBOT> mode=simple | also add a test', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  assert.equal(followup.accepted, true);
+  assert.equal(followup.taskId, started.taskId);
+  const jobs = f.store.jobsForTask(started.taskId);
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[1].request, 'also add a test');
+  assert.equal(jobs[1].requestedMode, 'simple');
+});
+
+test('in-thread implicit repo= and runtime= are rejected with the followup errors', async t => {
+  const f = fixture(t); channelMode(f);
+  const started = await f.bridge.receive(event('<@UBOT> can you fix this small error: blabla'));
+  await f.bridge.receive({ ...event('<@UBOT> repo=app | also add a test', { thread_ts: '123.1', ts: '123.2' }), event_id: 'Ev2' });
+  await f.bridge.receive({ ...event('<@UBOT> runtime=claude | also add a test', { thread_ts: '123.1', ts: '123.3' }), event_id: 'Ev3' });
+  assert.equal(f.store.jobsForTask(started.taskId).length, 1);
+  await f.bridge.flushOutbox();
+  assert.ok(f.posts.some(p => /^followup does not accept repo$/.test(p.text)));
+  assert.ok(f.posts.some(p => /^followup does not accept runtime$/.test(p.text)));
+});
+
+test('alias mode: implicit repo= starts a task on that alias', async t => {
+  const f = fixture(t);
+  const accepted = await f.bridge.receive(event('<@UBOT> repo=app mode=simple | fix the typo'));
+  assert.equal(accepted.accepted, true);
+  const task = f.store.getTask(accepted.taskId);
+  assert.equal(task.repoAlias, 'app');
+  assert.equal(task.initialRequest, 'fix the typo');
+  assert.equal(f.store.listJobs()[0].requestedMode, 'simple');
 });
 
 const linkRun = implementer => async request => ({ text: request.phase === 'precheck' ? pre('advanced') : request.phase === 'reviewer' ? '{"verdict":"pass","summary":"Verified","findings":[]}' : request.phase === 'implementer' && implementer ? implementer : `${request.phase} evidence` });
