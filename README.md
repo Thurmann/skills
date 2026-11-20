@@ -7,6 +7,7 @@ This repository is the source of truth for personal skills and related tools.
 - `bridge/slack-fix-code-company-bridge/` — the company variant: GitHub App installation tokens via a token file, and Claude via Vertex AI or Microsoft Foundry.
 - `scripts/install-skills.py` installs the skills to Codex and, when present, Claude Code.
 - `scripts/clean-worktrees.sh` removes fix-code worktrees under `$WORKSPACE/worktrees` (default `~/workspace/worktrees`), showing each worktree's branch, status, and added/last-changed dates. Run it with `--help` for options.
+- `scripts/open-prs.sh [dir ...]` lists the open GitHub pull requests of every repository found recursively under the given folders (default: the current directory), grouped by repository, with each `PR#N` as a clickable terminal link. Requires an authenticated `gh` CLI.
 
 ## Skills
 
