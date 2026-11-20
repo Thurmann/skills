@@ -118,6 +118,18 @@ describe() {
   echo "$(basename "$wt")  ${DIM}[$branch]${RESET}$flags"
 }
 
+# describe, computed once per worktree per run. fzf previews run in a child shell,
+# so the cache lives in a temp dir; write-then-rename keeps a cancelled preview
+# from leaving a partial entry.
+DESC_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/clean-worktrees.XXXXXX")"
+trap 'rm -rf "$DESC_CACHE"' EXIT
+describe_cached() {
+  local f
+  f="$DESC_CACHE/$(printf '%s' "$1" | tr '/' '%')"
+  [ -f "$f" ] || { describe "$1" > "$f.$$" && mv "$f.$$" "$f"; }
+  cat "$f"
+}
+
 # --- pick repos -----------------------------------------------------------
 if [ ${#REPOS[@]} -eq 0 ]; then
   ALL_REPOS=()
@@ -125,13 +137,13 @@ if [ ${#REPOS[@]} -eq 0 ]; then
   [ ${#ALL_REPOS[@]} -eq 0 ] && { echo "No worktrees found under $ROOT"; exit 0; }
 
   if have_fzf; then
-    export -f worktrees_of describe mtimes fmt_date added_epoch changed_epoch
-    export ROOT RED YELLOW DIM RESET GNU_STAT
+    export -f worktrees_of describe describe_cached mtimes fmt_date added_epoch changed_epoch
+    export ROOT RED YELLOW DIM RESET GNU_STAT DESC_CACHE
     while IFS= read -r r; do REPOS+=("$r"); done < <(
       printf '%s\n' "${ALL_REPOS[@]}" | fzf --multi --ansi --with-shell 'bash -c' \
         --header 'Pick repos to clean (TAB = select, ctrl-a = all, ENTER = confirm)' \
         --bind 'ctrl-a:select-all' \
-        --preview 'for w in $(worktrees_of {}); do describe "$w"; done' \
+        --preview 'for w in $(worktrees_of {}); do describe_cached "$w"; done' \
         --preview-window 'right,60%'
     )
   else
@@ -158,10 +170,13 @@ done
 
 if [ "$PICK_WORKTREES" -eq 1 ] && [ ${#TARGETS[@]} -gt 0 ] && have_fzf; then
   PICKED=()
-  while IFS= read -r line; do PICKED+=("$ROOT/$line"); done < <(
-    printf '%s\n' "${TARGETS[@]#"$ROOT/"}" | fzf --multi --bind 'start:select-all,ctrl-a:toggle-all' \
+  # Each line is "<repo>/<worktree><TAB><status line>"; only the status line is shown.
+  while IFS=$'\t' read -r rel _; do PICKED+=("$ROOT/$rel"); done < <(
+    for wt in "${TARGETS[@]}"; do
+      printf '%s\t%s\n' "${wt#"$ROOT/"}" "$(basename "$(dirname "$wt")")/$(describe_cached "$wt")"
+    done | fzf --multi --ansi --delimiter '\t' --with-nth 2.. --bind 'start:select-all,ctrl-a:toggle-all' \
       --header 'Pick worktrees (all preselected, TAB toggles, ctrl-a toggles all)' \
-      --preview "git -C '$ROOT'/{} log --oneline -10 --color=always; echo; git -C '$ROOT'/{} status --short"
+      --preview "git -C '$ROOT'/{1} log --oneline -10 --color=always; echo; git -C '$ROOT'/{1} status --short"
   )
   TARGETS=(${PICKED[@]+"${PICKED[@]}"})
 fi
@@ -196,7 +211,7 @@ if [ "$KEEP_BRANCHES" -eq 1 ]; then
 else
   echo "${BOLD}Will remove these worktrees ${RED}and delete their branches${RESET}${BOLD}:${RESET}"
 fi
-for wt in "${TARGETS[@]}"; do echo "  $(basename "$(dirname "$wt")")/$(describe "$wt")"; done
+for wt in "${TARGETS[@]}"; do echo "  $(basename "$(dirname "$wt")")/$(describe_cached "$wt")"; done
 echo
 
 if [ "$ASSUME_YES" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
