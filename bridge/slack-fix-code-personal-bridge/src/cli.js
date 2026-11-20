@@ -14,9 +14,12 @@ import { command, validateRepository } from './git.js';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function mkdirPrivate(folder) { fs.mkdirSync(folder, { recursive: true, mode: 0o700 }); fs.chmodSync(folder, 0o700); }
+// Slack SDK messages are useful for diagnosis; strip anything token-shaped before printing them.
+const redact = args => args.map(arg => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : JSON.stringify(arg)) ?? String(arg))
+  .join(' ').replace(/\bx(?:ox[a-z]|app)-[A-Za-z0-9-]+/g, '[redacted token]').replace(/(Bearer\s+)\S+/gi, '$1[redacted]');
 const safeLogger = {
-  debug() {}, info() {}, warn() { console.warn('Slack client warning (details suppressed to protect credentials).'); },
-  error() { console.error('Slack client error (details suppressed; check connection/app configuration).'); },
+  debug() {}, info() {}, warn(...args) { console.warn(`Slack client warning: ${redact(args)}`); },
+  error(...args) { console.error(`Slack client error: ${redact(args)} (check connection/app configuration)`); },
   getLevel() { return 'error'; }, setLevel() {}
 };
 const available = config => name => command(config.runtimes[name].path, ['--version']).then(() => true, () => false);
