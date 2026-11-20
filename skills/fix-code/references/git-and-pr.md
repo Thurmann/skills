@@ -52,6 +52,8 @@ Use the emitted paths in all later calls:
 python3 <skill>/scripts/git_guard.py check --state <state-json>
 ```
 
+Keep a persistent task record (plan, decisions), when the mode calls for one, next to the guard state: the state path with `.json` replaced by `-plan.md`. It lives in the Git common directory, so it survives across sessions, is shared by the checkout and its worktrees, and never shows up in `git status`. Do not create task records, notes, or scratch files inside the worktree.
+
 `check` is used the same way for in-place and worktree tasks. It requires the exact task branch in the recorded workspace, protects existing default/base branch refs, and verifies the last checkpoint remains an ancestor of HEAD. It also rejects detached HEAD, merge/rebase/cherry-pick/revert operations in progress, changed origin routing, and linked task worktrees that disappeared. Run before and after commits and before publishing. Do not edit state to bypass a failure. The helper does not prohibit arbitrary Git commands; compliance with the skill's restrictions remains mandatory.
 
 Task work needs uncommitted changes from the original checkout only when the human explicitly identifies them as input. Do not silently copy the dirty tree; agree on a scoped transfer or leave it in place and report the dependency.
