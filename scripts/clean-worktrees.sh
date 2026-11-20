@@ -4,19 +4,20 @@
 #
 # Usage: clean-worktrees.sh [options] [repo ...]
 #   -k, --keep-branches   only remove the worktree directories; keep the git branches
-#   -w, --pick-worktrees  also pick individual worktrees inside the chosen repos
+#   -a, --all             remove every worktree of the chosen repos, without picking
 #   -n, --dry-run         print what would happen, change nothing
 #   -y, --yes             skip the confirmation prompt
 #   -h, --help            show this help
 #
 # Without repo arguments an fzf picker is shown (TAB to multi-select).
+# Worktrees are picked with fzf (all preselected) unless -a is given.
 # Without -k/-y you are also asked which cleanup mode to use.
 
 set -uo pipefail
 
 ROOT="${WORKSPACE:-$HOME/workspace}/worktrees"
 KEEP_BRANCHES=""
-PICK_WORKTREES=0
+ALL_WORKTREES=0
 DRY_RUN=0
 ASSUME_YES=0
 REPOS=()
@@ -26,7 +27,7 @@ usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     -k|--keep-branches)  KEEP_BRANCHES=1 ;;
-    -w|--pick-worktrees) PICK_WORKTREES=1 ;;
+    -a|--all)            ALL_WORKTREES=1 ;;
     -n|--dry-run)        DRY_RUN=1 ;;
     -y|--yes)            ASSUME_YES=1 ;;
     -h|--help)           usage 0 ;;
@@ -168,7 +169,7 @@ for repo in "${REPOS[@]}"; do
   while IFS= read -r wt; do TARGETS+=("$wt"); done < <(worktrees_of "$repo")
 done
 
-if [ "$PICK_WORKTREES" -eq 1 ] && [ ${#TARGETS[@]} -gt 0 ] && have_fzf; then
+if [ "$ALL_WORKTREES" -eq 0 ] && [ ${#TARGETS[@]} -gt 0 ] && have_fzf; then
   PICKED=()
   # Each line is "<repo>/<worktree><TAB><status line>"; only the status line is shown.
   while IFS=$'\t' read -r rel _; do PICKED+=("$ROOT/$rel"); done < <(
