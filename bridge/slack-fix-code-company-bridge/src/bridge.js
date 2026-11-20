@@ -405,9 +405,14 @@ export class Bridge {
       if (mode === 'advanced') { plan = await this.phase(task, job, 'architect', {}, controller, outputDir); fs.writeFileSync(path.join(outputDir, 'plan.txt'), plan, { mode: 0o600 }); }
       let implementation = await this.phase(task, job, 'implementer', { plan, findings: job.findings || [] }, controller, outputDir);
       fs.writeFileSync(path.join(outputDir, 'implementation-0.txt'), implementation, { mode: 0o600 });
+      // Count from the last published commit, not this run's start: commits an earlier attempt left
+      // unpublished (failed review, interruption) are still this task's change and still need a PR.
+      // Tasks published before publishedCommit was recorded fall back to this run's start.
+      const publishedFrom = task.publishedCommit || (task.prUrl ? job.startCommit : task.baseCommit);
+      const carried = publishedFrom !== job.startCommit;
       // A request that needs no code change (a question, already fixed, cannot reproduce) is a valid
       // outcome: report the implementer's answer instead of failing at publication.
-      const commits = Number(await this.git.command('git', ['rev-list', '--count', `${job.startCommit}..HEAD`], { cwd: task.worktree, signal: controller.signal }));
+      const commits = Number(await this.git.command('git', ['rev-list', '--count', `${publishedFrom}..HEAD`], { cwd: task.worktree, signal: controller.signal }));
       const dirty = await this.git.command('git', ['status', '--porcelain'], { cwd: task.worktree, signal: controller.signal });
       if (commits === 0 && !dirty) {
         if (controller.signal.aborted) throw new Error('Task canceled.');
@@ -416,12 +421,14 @@ export class Bridge {
         task.status = 'succeeded'; task.lastSummary = implementation.slice(0, 12000); task.cancelRequested = false; task.updated = time();
         job.status = 'succeeded'; job.pid = null; job.updated = time();
         this.store.saveTask(task); this.store.saveJob(job);
-        this.store.saveOutbox(outbox(task, { text: `Task ${task.id} finished with no code changes.`, sections: [md(':white_check_mark: *Finished with no code changes*', 'No PR was published.', `Mode: ${code(mode)}`), precheckReason(job), plain(implementation.slice(0, 3000))] }));
+        const published = task.prUrl ? `${prLink(task.prUrl)} already has every commit on this branch.` : 'No PR was published: the branch has no commits to publish.';
+        this.store.saveOutbox(outbox(task, { text: `Task ${task.id} finished with no code changes.`, sections: [md(':white_check_mark: *Finished with no code changes*', published, `Mode: ${code(mode)}`), precheckReason(job), plain(implementation.slice(0, 3000))] }));
         return;
       }
-      const files = (await this.git.command('git', ['diff', '--name-only', `${job.startCommit}..HEAD`, '--'], { cwd: task.worktree, signal: controller.signal })).split('\n').filter(Boolean);
+      const newCommits = carried ? Number(await this.git.command('git', ['rev-list', '--count', `${job.startCommit}..HEAD`], { cwd: task.worktree, signal: controller.signal })) : commits;
+      const files = (await this.git.command('git', ['diff', '--name-only', `${publishedFrom}..HEAD`, '--'], { cwd: task.worktree, signal: controller.signal })).split('\n').filter(Boolean);
       const changedTotal = files.length, changed = files.filter(isLogicFile).length;
-      const lines = mode === 'fast' ? logicLines(await this.git.command('git', ['diff', '--numstat', `${job.startCommit}..HEAD`, '--'], { cwd: task.worktree, signal: controller.signal })) : null;
+      const lines = mode === 'fast' ? logicLines(await this.git.command('git', ['diff', '--numstat', `${publishedFrom}..HEAD`, '--'], { cwd: task.worktree, signal: controller.signal })) : null;
       // Escalation and review rules below implement skills/fix-code/references/modes.md, the single source of truth; change modes.md first and keep this in line with it.
       const exceeded = /^SCOPE_EXCEEDED:/m.test(implementation);
       let escalated = false;
@@ -440,6 +447,9 @@ export class Bridge {
         else if (exceeded) reviewReason = 'scope exceeded';
         skipReason = `medium mode, ${changed} logic files changed within ${predicted} predicted`;
       }
+      // Carried commits that an earlier review rejected must pass a fresh review before publication.
+      const earlierReview = this.store.jobsForTask(task.id).filter(other => other.id !== job.id && other.review).at(-1)?.review;
+      if (!reviewReason && carried && earlierReview && earlierReview.verdict !== 'pass') reviewReason = 'earlier review unresolved';
       let review;
       if (reviewReason) {
         for (let round = 0; round <= this.config.maxRepairRounds; round++) {
@@ -474,12 +484,14 @@ export class Bridge {
       job.status = 'publishing'; job.stage = 'publishing'; this.store.saveJob(job);
       task.stage = 'publishing'; this.store.saveTask(task);
       const prUrl = await this.git.publishPR(this.config, task, `${outcome}\n\n${implementation}`, outputDir, controller.signal, { draft, draftReason });
+      task.publishedCommit = (await this.git.command('git', ['rev-parse', 'HEAD'], { cwd: task.worktree, signal: controller.signal })).trim();
       task.prUrl = prUrl; task.status = 'succeeded'; task.lastSummary = implementation.slice(0, 12000); task.cancelRequested = false; task.updated = time();
       job.status = 'succeeded'; job.pid = null; job.updated = time(); job.prUrl = prUrl;
       this.store.saveTask(task); this.store.saveJob(job);
       this.store.saveOutbox(outbox(task, { text: `Task ${task.id}: ${draft ? 'draft PR' : 'PR ready for review'} ${prUrl}`, sections: [
         md(`:white_check_mark: *${prLink(prUrl)}* ${draft ? 'opened as draft' : 'ready for review'}`,
           `Branch: ${code(task.branch)}`,
+          newCommits === 0 && 'No new edits this run; published the commits an earlier attempt left on the branch.',
           `Mode: ${code(mode)}${escalated ? ' (escalated from simple)' : ''}`,
           `Review: ${reviewReason ? 'passed' : 'not required'}`,
           ...(mode === 'fast' ? [`Changed: ${lines} logic lines in ${changed} files`, 'Tests: not run locally; CI runs them'] : [`Logic files: ${predicted ?? '?'} predicted, ${changed} changed`])),
