@@ -113,6 +113,8 @@ test('real isolated worktree and guarded publication use only explicit task ref 
   const first = await publishPR(config, task, 'Regression check passed.', artifacts);
   const second = await publishPR(config, task, 'Followup verified.', artifacts);
   assert.equal(first, second);
+  assert.equal(git(task.worktree, 'config', `branch.${task.branch}.remote`), 'origin'); // local branch tracks the PR branch
+  assert.equal(git(task.worktree, 'config', `branch.${task.branch}.merge`), `refs/heads/${task.branch}`);
   const calls = readCalls();
   assert.equal(calls.filter(a => a[0] === 'pr' && a[1] === 'create').length, 1);
   const comments = calls.filter(a => a[0] === 'pr' && a[1] === 'comment');
