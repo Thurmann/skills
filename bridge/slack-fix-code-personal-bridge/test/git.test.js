@@ -113,8 +113,6 @@ test('real isolated worktree and guarded publication use only explicit task ref 
   const first = await publishPR(config, task, 'Regression check passed.', artifacts);
   const second = await publishPR(config, task, 'Followup verified.', artifacts);
   assert.equal(first, second);
-  assert.equal(git(task.worktree, 'config', `branch.${task.branch}.remote`), 'origin'); // local branch tracks the PR branch
-  assert.equal(git(task.worktree, 'config', `branch.${task.branch}.merge`), `refs/heads/${task.branch}`);
   const calls = readCalls();
   assert.equal(calls.filter(a => a[0] === 'pr' && a[1] === 'create').length, 1);
   const comments = calls.filter(a => a[0] === 'pr' && a[1] === 'comment');
@@ -134,7 +132,7 @@ test('real isolated worktree and guarded publication use only explicit task ref 
   assert.ok(JSON.parse(fs.readFileSync(labelState, 'utf8')).some(l => l.name === 'bug'));
   const pushes = fs.readFileSync(gitLog, 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(pushes.length, 2);
-  assert.ok(pushes.every(args => args.length === 3 && args[0] === 'push' && args[1] === 'origin' && args[2] === `HEAD:refs/heads/${task.branch}`));
+  assert.ok(pushes.every(args => args.length === 4 && args[0] === 'push' && args[1] === '-u' && args[2] === 'origin' && args[3] === `HEAD:refs/heads/${task.branch}`)); // -u: local branch tracks the PR branch
   assert.equal(git(repo, 'rev-parse', 'main'), mainBefore);
   assert.equal(git(repo, 'status', '--porcelain'), statusBefore);
   const ready = JSON.parse(fs.readFileSync(ghState, 'utf8')); ready[0].isDraft = false;
