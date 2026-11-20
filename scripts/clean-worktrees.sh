@@ -4,6 +4,7 @@
 #
 # Usage: clean-worktrees.sh [options] [repo ...]
 #   -k, --keep-branches   only remove the worktree directories; keep the git branches
+#   -r, --remote          also delete each branch's upstream branch on its remote
 #   -a, --all             remove every worktree of the chosen repos, without picking
 #   -n, --dry-run         print what would happen, change nothing
 #   -y, --yes             skip the confirmation prompt
@@ -18,16 +19,18 @@ set -uo pipefail
 ROOT="${WORKSPACE:-$HOME/workspace}/worktrees"
 KEEP_BRANCHES=""
 ALL_WORKTREES=0
+DELETE_REMOTE=0
 DRY_RUN=0
 ASSUME_YES=0
 REPOS=()
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -k|--keep-branches)  KEEP_BRANCHES=1 ;;
     -a|--all)            ALL_WORKTREES=1 ;;
+    -r|--remote)         DELETE_REMOTE=1 ;;
     -n|--dry-run)        DRY_RUN=1 ;;
     -y|--yes)            ASSUME_YES=1 ;;
     -h|--help)           usage 0 ;;
@@ -36,6 +39,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+if [ "$KEEP_BRANCHES" = "1" ] && [ "$DELETE_REMOTE" -eq 1 ]; then
+  echo "-k and -r cannot be combined" >&2; exit 1
+fi
 
 if [ -t 1 ]; then
   RED=$'\e[31m' GREEN=$'\e[32m' YELLOW=$'\e[33m' DIM=$'\e[2m' BOLD=$'\e[1m' RESET=$'\e[0m'
@@ -204,13 +211,21 @@ if [ -z "$KEEP_BRANCHES" ]; then
     esac
   fi
 fi
+if [ "$KEEP_BRANCHES" -eq 1 ] && [ "$DELETE_REMOTE" -eq 1 ]; then
+  echo "${YELLOW}Keeping branches, so remote branches are kept too.${RESET}"
+  DELETE_REMOTE=0
+fi
 
 # --- confirm --------------------------------------------------------------
 echo
 if [ "$KEEP_BRANCHES" -eq 1 ]; then
   echo "${BOLD}Will remove these worktree directories (branches are kept):${RESET}"
 else
-  echo "${BOLD}Will remove these worktrees ${RED}and delete their branches${RESET}${BOLD}:${RESET}"
+  if [ "$DELETE_REMOTE" -eq 1 ]; then
+    echo "${BOLD}Will remove these worktrees ${RED}and delete their local and remote branches${RESET}${BOLD}:${RESET}"
+  else
+    echo "${BOLD}Will remove these worktrees ${RED}and delete their branches${RESET}${BOLD}:${RESET}"
+  fi
 fi
 for wt in "${TARGETS[@]}"; do echo "  $(basename "$(dirname "$wt")")/$(describe_cached "$wt")"; done
 echo
@@ -226,6 +241,13 @@ MAIN_REPOS=()
 for wt in "${TARGETS[@]}"; do
   echo "${BOLD}$(basename "$(dirname "$wt")")/$(basename "$wt")${RESET}"
   branch="$(git -C "$wt" branch --show-current 2>/dev/null)"
+  # Read the upstream now: deleting the local branch drops its config.
+  up_remote="" up_branch=""
+  if [ -n "$branch" ]; then
+    up_remote="$(git -C "$wt" config "branch.$branch.remote" 2>/dev/null)"
+    up_branch="$(git -C "$wt" config "branch.$branch.merge" 2>/dev/null)"
+    up_branch="${up_branch#refs/heads/}"
+  fi
   common="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
   main=""
   # <repo>/.git -> <repo>; a bare repo is used as-is
@@ -250,6 +272,17 @@ for wt in "${TARGETS[@]}"; do
       [ "$DRY_RUN" -eq 1 ] || echo "  ${GREEN}deleted branch $branch${RESET}"
     else
       echo "  ${RED}could not delete branch $branch${RESET}"; FAILED=1
+    fi
+    if [ "$DELETE_REMOTE" -eq 1 ]; then
+      if [ -z "$up_remote" ] || [ "$up_remote" = "." ] || [ -z "$up_branch" ]; then
+        echo "  ${DIM}no remote upstream${RESET}"
+      elif ! git -C "$main" ls-remote --exit-code --heads "$up_remote" "$up_branch" >/dev/null 2>&1; then
+        echo "  ${DIM}remote branch $up_remote/$up_branch already gone${RESET}"
+      elif run git -C "$main" push "$up_remote" --delete "$up_branch"; then
+        [ "$DRY_RUN" -eq 1 ] || echo "  ${GREEN}deleted remote branch $up_remote/$up_branch${RESET}"
+      else
+        echo "  ${RED}could not delete remote branch $up_remote/$up_branch${RESET}"; FAILED=1
+      fi
     fi
   elif [ -n "$branch" ]; then
     echo "  ${DIM}kept branch $branch${RESET}"
