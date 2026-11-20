@@ -83,7 +83,10 @@ test('app mode rejects a token file older than one hour and checkGitHubTokenFile
   assert.equal(fs.existsSync(f.ghMarker), false);
 
   const now = Date.now();
-  fs.utimesSync(f.tokenFile, new Date(now - 55 * MINUTE), new Date(now - 55 * MINUTE));
+  // One second inside the limit: an mtime set to exactly 55 minutes can read back a
+  // fraction of a millisecond older on Linux, which made this assertion flaky in CI.
+  const inside = new Date(now - 55 * MINUTE + 1000);
+  fs.utimesSync(f.tokenFile, inside, inside);
   assert.equal(checkGitHubTokenFile(f.tokenFile, { maxAgeMs: 55 * MINUTE, now }), 'ghs_app');
   fs.utimesSync(f.tokenFile, new Date(now - 56 * MINUTE), new Date(now - 56 * MINUTE));
   assert.throws(() => checkGitHubTokenFile(f.tokenFile, { maxAgeMs: 55 * MINUTE, now }), /minutes old \(limit 55\)/);
