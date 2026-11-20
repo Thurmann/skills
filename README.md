@@ -21,7 +21,7 @@ Run the installer after changing the source skills:
 ./scripts/install-skills.py
 ```
 
-It updates matching skill folders in the active Codex home, `~/.agents/skills`, and `~/.codex/skills`. It also updates `~/.claude/skills` when Claude Code is present. It keeps unrelated installed skills and supports `--dry-run`.
+It updates matching skill folders in `~/.agents/skills`, where Codex reads user skills. It also updates `~/.claude/skills` when Claude Code is present. It keeps unrelated installed skills and supports `--dry-run`.
 
 Start a new agent session after installation so it discovers the updated skills. Keep project footage, proxies, render outputs, and personal production records out of this repository.
 
