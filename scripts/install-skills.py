@@ -75,11 +75,9 @@ def main() -> int:
     workspace_root = Path(__file__).resolve().parents[1]
     sources = skill_sources(workspace_root / "skills")
     home = Path.home()
-    configured_codex_home = os.environ.get("CODEX_HOME")
-    codex_home = Path(configured_codex_home).expanduser() if configured_codex_home else home / ".codex"
-    codex_targets = [codex_home / "skills", home / ".agents" / "skills"]
-    # This Codex installation also discovers skills under ~/.codex/skills.
-    codex_targets.append(home / ".codex" / "skills")
+    # Current Codex reads user skills from ~/.agents/skills; the older
+    # $CODEX_HOME/skills (~/.codex/skills) location is no longer installed to.
+    codex_targets = [home / ".agents" / "skills"]
 
     targets: list[tuple[str, Path]] = []
     seen: set[Path] = set()

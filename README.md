@@ -22,7 +22,7 @@ Run the installer after changing the source skills:
 ./scripts/install-skills.py
 ```
 
-It updates matching skill folders in the active Codex home, `~/.agents/skills`, and `~/.codex/skills`. It also updates `~/.claude/skills` when Claude Code is present. It keeps unrelated installed skills and supports `--dry-run`.
+It updates matching skill folders in `~/.agents/skills`, where Codex reads user skills. It also updates `~/.claude/skills` when Claude Code is present. It keeps unrelated installed skills and supports `--dry-run`.
 
 It also copies `clean-worktrees.sh` to `$WORKSPACE/worktrees/` and `open-prs.sh` to `$WORKSPACE/` (default `~/workspace`), so `~/workspace/open-prs.sh` checks every repository in the workspace.
 
