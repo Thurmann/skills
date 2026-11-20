@@ -134,7 +134,7 @@ export async function publishPR(config, task, result, outputDir, signal, { draft
   const count = Number(await command('git', ['rev-list', '--count', `${task.baseCommit}..HEAD`], { cwd: task.worktree, signal }));
   if (!count) throw new Error('No task commits were created; no PR was published.');
   const existing = await checkExistingPR(config, task, signal);
-  await command('git', ['push', task.repository.remote, `HEAD:refs/heads/${task.branch}`], { cwd: task.worktree, signal });
+  await command('git', ['push', '-u', task.repository.remote, `HEAD:refs/heads/${task.branch}`], { cwd: task.worktree, signal });
   await guardCheck(config, task.guardState, signal);
   let pr = existing;
   const text = `This change addresses the authenticated Slack task ${task.id}.\n\n${result.slice(0, 12000)}\n\nBridge verification completed before publication; the mode and review outcome are stated above. Review the evidence and diff before merging.\n${draft ? `\nThis PR is a draft because verification is incomplete: ${draftReason || 'the implementer did not report complete verification'}.\n` : ''}`;
@@ -159,15 +159,5 @@ export async function publishPR(config, task, result, outputDir, signal, { draft
     pr = await findPR(config, task, signal);
   }
   if (!pr || pr.state !== 'OPEN' || pr.isDraft !== draft || !/^https:\/\/github\.com\//.test(pr.url)) throw new Error('PR creation could not be verified. Inspect the branch/forge before retrying.');
-  await setUpstream(task, signal);
   return pr.url;
-}
-// Track the PR branch so the local branch shows ahead/behind. Writes what
-// `git branch --set-upstream-to` would, without needing the remote-tracking ref.
-// Best effort: the PR already exists, so a failure here must not fail publication.
-async function setUpstream(task, signal) {
-  try {
-    await command('git', ['config', `branch.${task.branch}.remote`, task.repository.remote], { cwd: task.worktree, signal });
-    await command('git', ['config', `branch.${task.branch}.merge`, `refs/heads/${task.branch}`], { cwd: task.worktree, signal });
-  } catch {}
 }
