@@ -23,7 +23,7 @@ function fixture(t, options = {}) {
   const bridge = new Bridge(config, store, runner, { async post(payload) { posts.push(payload); if (options.post) return options.post(payload); return { ts: '123.99' }; } }, 'UBOT', {
     async prepareTask(c, task) { return { ...task, worktree: folder, branch: 'fix-code/task', guardState: '/fixture/guard.json', gitCommonDir: '/fixture/git', baseCommit: 'base' }; },
     async guardCheck() { return { ok: true }; }, async checkExistingPR() { if (options.closedPR) throw new Error('PR is merged/closed.'); },
-    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'rev-list') return options.commits ?? '1\n'; if (args[0] === 'ls-files') return state.untracked; if (args.includes('--numstat')) return options.numstat ?? '1\t1\ta.js\n'; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
+    async command(cmd, args) { commands.push(args); if (args[0] === 'rev-parse') return state.head ?? options.startCommit ?? 'start0\n'; if (args[0] === 'status') return state.status; if (args[0] === 'rev-list') return options.revList?.(args.at(-1)) ?? options.commits ?? '1\n'; if (args[0] === 'ls-files') return state.untracked; if (args.includes('--numstat')) return options.numstat ?? '1\t1\ta.js\n'; return args.includes('--name-only') ? (options.nameOnly ?? 'a.js\nb.js') : '2 files changed'; },
     async publishPR(c, task, result, outputDir, signal, options) { publications++; published.push(result); publishOptions.push(options); return 'https://github.com/example/app/pull/1'; },
     ...(options.repositoryRouter ? { repositoryRouter: options.repositoryRouter } : {})
   });
@@ -284,7 +284,7 @@ test('a request needing no code change succeeds with the answer and publishes no
   assert.equal(f.store.listJobs()[0].calibration.changed_files, 0);
   const posts = f.store.listOutbox();
   assert.equal(posts.length, 3);
-  assert.equal(shown(posts[2]), ':white_check_mark: *Finished with no code changes*\nNo PR was published.\nMode: `simple`\nPrecheck: Not a code change.\n2 + 2 = 4');
+  assert.equal(shown(posts[2]), ':white_check_mark: *Finished with no code changes*\nNo PR was published: the branch has no commits to publish.\nMode: `simple`\nPrecheck: Not a code change.\n2 + 2 = 4');
 });
 
 test('no new commits with uncommitted files still fails at publication', async t => {
@@ -393,12 +393,35 @@ test('prompts read skill files per phase', async t => {
   assert.doesNotMatch(prompt('implementer'), /model-policy\.md\)|\/model-policy/);
 });
 
-test('change counting uses the job start commit, not the task base', async t => {
+test('change counting starts at the last published commit', async t => {
   const f = fixture(t, { run: modeRun(pre('simple')), startCommit: 'abc123\n' });
-  await f.bridge.receive(event()); await f.bridge.tick();
-  const names = f.commands.find(a => a.includes('--name-only'));
-  assert.ok(names.includes('abc123..HEAD'));
+  const accepted = await f.bridge.receive(event()); await f.bridge.tick();
+  assert.ok(f.commands.find(a => a.includes('--name-only')).includes('base..HEAD'), 'unpublished task: count from the task base');
   assert.equal(f.store.listJobs()[0].startCommit, 'abc123');
+  assert.equal(f.store.getTask(accepted.taskId).publishedCommit, 'abc123');
+  f.state.head = 'def456\n'; f.commands.length = 0;
+  await f.bridge.receive({ ...event('<@UBOT> followup -- also fix b', { ts: '123.2', thread_ts: '123.1' }), event_id: 'Ev2' }); await f.bridge.tick();
+  assert.ok(f.commands.find(a => a.includes('--name-only')).includes('abc123..HEAD'), 'published task: count from the published commit');
+});
+
+test('a run with no new edits publishes commits an earlier attempt left unpublished', async t => {
+  let reviews = 0;
+  // The first fast run is far over budget, so it is reviewed and rejected; the retry adds nothing and is within budget.
+  const options = { run: async request => ({ text: request.phase === 'reviewer' ? JSON.stringify(++reviews === 1 ? { verdict: 'changes_requested', summary: 'Nothing was run', findings: ['run the suite'] } : { verdict: 'pass', summary: 'ok', findings: [] }) : 'done\nVERIFICATION: complete' }), startCommit: 'base\n', numstat: '20\t0\ta.js\n', revList: range => range === 'later..HEAD' ? '0\n' : '3\n' };
+  const f = fixture(t, options);
+  f.config.maxRepairRounds = 0;
+  const accepted = await f.bridge.receive(event('<@UBOT> run repo=app mode=fast -- center the title'));
+  await f.bridge.tick();
+  assert.equal(f.store.getTask(accepted.taskId).status, 'failed');
+  assert.equal(f.publications(), 0);
+  f.state.head = 'later\n'; options.numstat = '1\t1\ta.js\n';
+  await f.bridge.receive({ ...event('<@UBOT> retry', { ts: '123.2', thread_ts: '123.1' }), event_id: 'Ev2' }); await f.bridge.tick();
+  assert.equal(f.publications(), 1, 'the carried commits are published');
+  assert.equal(f.store.listJobs().at(-1).calibration.review_reason, 'earlier review unresolved');
+  assert.match(shown(f.store.listOutbox().at(-1)), /No new edits this run; published the commits an earlier attempt left on the branch\./);
+  await f.bridge.receive({ ...event('<@UBOT> followup -- create a PR then', { ts: '123.3', thread_ts: '123.1' }), event_id: 'Ev3' }); await f.bridge.tick();
+  assert.equal(f.publications(), 1, 'nothing new to publish');
+  assert.match(shown(f.store.listOutbox().at(-1)), /Finished with no code changes\*\n<https:\/\/github\.com\/example\/app\/pull\/1\|PR #1> already has every commit on this branch\./);
 });
 
 test('retry keeps the previous explicit mode', async t => {
