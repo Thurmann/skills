@@ -5,7 +5,7 @@ This repository is the source of truth for personal skills and related tools.
 - `skills/<skill-name>/` contains portable agent skills.
 - `bridge/slack-fix-code-personal-bridge/` — the fix-code Slack bridge for personal use (uses your authenticated `gh` account).
 - `bridge/slack-fix-code-company-bridge/` — the company variant: GitHub App installation tokens via a token file, and Claude via Vertex AI or Microsoft Foundry.
-- `scripts/install-skills.py` installs the skills to Codex and, when present, Claude Code.
+- `scripts/install-skills.py` installs the skills to Codex and, when present, Claude Code, and copies the helper scripts below into `$WORKSPACE`.
 - `scripts/clean-worktrees.sh` removes fix-code worktrees under `$WORKSPACE/worktrees` (default `~/workspace/worktrees`), showing each worktree's branch, status, and added/last-changed dates. Run it with `--help` for options.
 - `scripts/open-prs.sh [dir ...]` lists the open GitHub pull requests of every repository found recursively under the given folders (default: the current directory), grouped by repository, with each `PR#N` as a clickable terminal link. Requires an authenticated `gh` CLI.
 
@@ -23,6 +23,8 @@ Run the installer after changing the source skills:
 ```
 
 It updates matching skill folders in the active Codex home, `~/.agents/skills`, and `~/.codex/skills`. It also updates `~/.claude/skills` when Claude Code is present. It keeps unrelated installed skills and supports `--dry-run`.
+
+It also copies `clean-worktrees.sh` to `$WORKSPACE/worktrees/` and `open-prs.sh` to `$WORKSPACE/` (default `~/workspace`), so `~/workspace/open-prs.sh` checks every repository in the workspace.
 
 Start a new agent session after installation so it discovers the updated skills. Keep project footage, proxies, render outputs, and personal production records out of this repository.
 

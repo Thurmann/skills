@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Install workspace skills into local Codex and Claude Code skill directories."""
+"""Install workspace skills into local Codex and Claude Code skill directories, and the
+helper scripts into $WORKSPACE (default ~/workspace)."""
 
 from __future__ import annotations
 
@@ -51,6 +52,21 @@ def install_one(source: Path, destination: Path, dry_run: bool) -> None:
     print(f"Installed {source.name} -> {destination}")
 
 
+def install_file(source: Path, destination: Path, dry_run: bool) -> None:
+    if dry_run:
+        print(f"Would install {source.name} -> {destination}")
+        return
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.parent / f".{destination.name}.staging-{uuid.uuid4().hex}"
+    try:
+        shutil.copy2(source, staging)
+        os.replace(staging, destination)
+    finally:
+        staging.unlink(missing_ok=True)
+    print(f"Installed {source.name} -> {destination}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="show target paths without copying files")
@@ -88,6 +104,16 @@ def main() -> int:
         for source in sources:
             print(f"{product}: ", end="")
             install_one(source, target_root / source.name, args.dry_run)
+
+    # Same default as the scripts themselves use for $WORKSPACE.
+    workspace = Path(os.environ.get("WORKSPACE") or home / "workspace").expanduser()
+    scripts = workspace_root / "scripts"
+    for source, destination in [
+        (scripts / "clean-worktrees.sh", workspace / "worktrees" / "clean-worktrees.sh"),
+        (scripts / "open-prs.sh", workspace / "open-prs.sh"),
+    ]:
+        print("Script: ", end="")
+        install_file(source, destination, args.dry_run)
     return 0
 
 
