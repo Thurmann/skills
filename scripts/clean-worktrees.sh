@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Clean up git worktrees living under $WORKSPACE_DIR/worktrees/<repo>/<worktree>/.
-# WORKSPACE_DIR defaults to ~/workspace.
+# Clean up git worktrees living under $WORKSPACE/worktrees/<repo>/<worktree>/.
+# WORKSPACE defaults to ~/workspace.
 #
 # Usage: clean-worktrees.sh [options] [repo ...]
 #   -k, --keep-branches   only remove the worktree directories; keep the git branches
@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-ROOT="${WORKSPACE_DIR:-$HOME/workspace}/worktrees"
+ROOT="${WORKSPACE:-$HOME/workspace}/worktrees"
 KEEP_BRANCHES=""
 PICK_WORKTREES=0
 DRY_RUN=0
