@@ -75,7 +75,7 @@ Optimized for correctness. These rules are non-negotiable while the task is in A
 
 - Workspace: always a separate worktree from the start.
 
-1. **Architect plans first.** Before any implementation edit, the architect role produces the plan: architecture or design decisions, interfaces, risks, staged units with acceptance checks, and the verification path. Keep this plan in a persistent task record in the worktree.
+1. **Architect plans first.** Before any implementation edit, the architect role produces the plan: architecture or design decisions, interfaces, risks, staged units with acceptance checks, and the verification path. Keep this plan in a persistent task record next to the guard state, outside the worktree (see the Git reference), so it never leaves the worktree dirty.
 2. **Cheap subagents implement.** Bounded units go to cheap, efficient implementer subagents, one writer per branch at a time. The coordinator and architect do not write bulk implementation. Each unit is verified before the next starts.
 3. **Independent review is mandatory.** A fresh reviewer subagent with an architect-class model inspects the full diff against the base, the plan, and the verification evidence, including the baseline and final full-suite results. It must not be the same agent instance that wrote the plan or the code. Fix actionable findings on the task branch with new commits, rerun affected checks, and have the reviewer confirm the fixes. Do not open a non-draft PR before the review passes. If the review cannot run, open a draft PR and state the blocker.
 4. Use [change-type guidance](change-types.md) for new-repository and large-feature specifics, including end-to-end slices and milestone delivery.
