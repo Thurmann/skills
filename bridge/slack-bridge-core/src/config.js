@@ -12,9 +12,10 @@ export function validateProfile(p) {
   if (!isObject(p)) throw new Error('Bridge profile must be an object.');
   for (const key of ['id', 'configDirName', 'configEnvVar', 'packageDir', 'defaultSkillPath']) if (!nonEmpty(p[key])) throw new Error(`Bridge profile ${key} must be a nonempty string.`);
   if (!isObject(p.github) || !Array.isArray(p.github.modes) || !p.github.modes.length || p.github.modes.some(m => !['user', 'app'].includes(m)) || !p.github.modes.includes('user')) throw new Error('Bridge profile github.modes must list "user" and optionally "app".');
-  if (!bool(p.github.tokenFile) || !bool(p.github.forbidRuntimeTokenEnv)) throw new Error('Bridge profile github.tokenFile and github.forbidRuntimeTokenEnv must be booleans.');
+  if (!bool(p.github.tokenFile) || !bool(p.github.forbidRuntimeTokenEnv) || !bool(p.github.requireTokenFile)) throw new Error('Bridge profile github.tokenFile, github.forbidRuntimeTokenEnv and github.requireTokenFile must be booleans.');
+  if (p.github.requireTokenFile && !p.github.tokenFile) throw new Error('Bridge profile github.requireTokenFile requires github.tokenFile.');
   if (p.github.modes.includes('app') && !p.github.tokenFile) throw new Error('Bridge profile github mode "app" requires github.tokenFile.');
-  if (!isObject(p.routing) || !bool(p.routing.localRoot)) throw new Error('Bridge profile routing.localRoot must be a boolean.');
+  if (!isObject(p.routing) || !bool(p.routing.localRoot) || !bool(p.routing.aliases)) throw new Error('Bridge profile routing.localRoot and routing.aliases must be booleans.');
   return p;
 }
 /** Bind the per-variant parts of configuration (config dir, env var, GitHub and routing capabilities) to a profile. */
@@ -83,6 +84,7 @@ function loadConfigFor(profile, configPath, defaultSkill) {
   c.githubAuth ??= 'user';
   if (!['user', 'app'].includes(c.githubAuth)) throw new Error('githubAuth must be "user" or "app".');
   if (!profile.github.modes.includes(c.githubAuth)) throw new Error(`githubAuth "${c.githubAuth}" is not supported by the ${profile.id} bridge.`);
+  if (profile.github.requireTokenFile && c.githubTokenFile === undefined) throw new Error(`githubTokenFile is required by the ${profile.id} bridge.`);
   if (c.githubTokenFile !== undefined) c.githubTokenFile = absolute(c.githubTokenFile, directory);
   if (c.githubAuth === 'app' && !c.githubTokenFile) throw new Error('githubAuth "app" requires githubTokenFile (GitHub App installation tokens expire after one hour).');
   if (c.githubTokenFile && c.forwardGitHubAuth === true) throw new Error('forwardGitHubAuth cannot be combined with githubTokenFile; coding runtimes never receive the GitHub token.');
@@ -92,6 +94,10 @@ function loadConfigFor(profile, configPath, defaultSkill) {
   const routing = c.repositoryRouting;
   if (routing.mode === undefined) routing.mode = hasAliases ? 'aliases' : 'channel';
   if (!['channel', 'aliases'].includes(routing.mode)) throw new Error('repositoryRouting.mode must be channel or aliases.');
+  if (!profile.routing.aliases) {
+    if (routing.mode === 'aliases') throw new Error(`repositoryRouting.mode "aliases" is not supported by the ${profile.id} bridge.`);
+    if (hasAliases) throw new Error(`repositories (local checkout aliases) is not supported by the ${profile.id} bridge.`);
+  }
   if (routing.allowedOwners === undefined) routing.allowedOwners = [];
   if (!Array.isArray(routing.allowedOwners)) throw new Error('repositoryRouting.allowedOwners must be an array.');
   for (const owner of routing.allowedOwners) {

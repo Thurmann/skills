@@ -4,13 +4,13 @@
 
 `bridge/slack-bridge-core` is the shared bridge: the Slack protocol, queue, runner, providers, Git and repository routing, configuration and CLI. It has no dependencies of its own. Each variant is a thin package that depends on it with `"slack-bridge-core": "file:../slack-bridge-core"` and selects behaviour through a profile:
 
-| Variant | Profile `id` | GitHub `modes` | `tokenFile` | `forbidRuntimeTokenEnv` | `routing.localRoot` | Config home |
-| --- | --- | --- | --- | --- | --- | --- |
-| `slack-fix-code-personal-bridge` | `personal-local` | `user` | no | no | yes | `~/.config/fix-code-bridge` |
-| `slack-fix-code-personal-cloud-bridge` | `personal-cloud` | `user` | yes | yes | no | `~/.config/fix-code-personal-cloud-bridge` |
-| `slack-fix-code-company-bridge` | `company` | `user`, `app` | yes | yes | yes | `~/.config/fix-code-company-bridge` |
+| Variant | Profile `id` | GitHub `modes` | `tokenFile` | `requireTokenFile` | `forbidRuntimeTokenEnv` | `routing.localRoot` | `routing.aliases` | Config home |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `slack-fix-code-personal-bridge` | `personal-local` | `user` | no | no | no | yes | yes | `~/.config/fix-code-bridge` |
+| `slack-fix-code-personal-cloud-bridge` | `personal-cloud` | `user` | yes | yes | yes | no | no | `~/.config/fix-code-personal-cloud-bridge` |
+| `slack-fix-code-company-bridge` | `company` | `user`, `app` | yes | no | yes | yes | yes | `~/.config/fix-code-company-bridge` |
 
-Each variant's `src/profile.js` exports the profile: `id`, `configDirName`, `configEnvVar`, `packageDir`, `defaultSkillPath`, `github: { modes, tokenFile, forbidRuntimeTokenEnv }` and `routing: { localRoot }`. `config.js` validates it. A variant's `src/cli.js` imports the Slack SDK (`@slack/socket-mode`, `@slack/web-api`), passes the classes into `runCli(profile, ...)` from core, and the SDK therefore stays in the variant. Core must never import `@slack/*`. Core's `config.js` rejects a setting the profile does not allow with an error such as `githubTokenFile is not supported by the personal-local bridge.`, `githubAuth "app" is not supported by the personal-cloud bridge`, or `repositoryRouting.localRoot is not supported by the personal-cloud bridge`; it does not silently ignore it.
+Each variant's `src/profile.js` exports the profile: `id`, `configDirName`, `configEnvVar`, `packageDir`, `defaultSkillPath`, `github: { modes, tokenFile, requireTokenFile, forbidRuntimeTokenEnv }` and `routing: { localRoot, aliases }` (`requireTokenFile` makes `githubTokenFile` mandatory; `aliases: false` rejects `repositoryRouting.mode "aliases"` and a top-level `repositories` map, leaving channel routing with managed clones). `config.js` validates it. A variant's `src/cli.js` imports the Slack SDK (`@slack/socket-mode`, `@slack/web-api`), passes the classes into `runCli(profile, ...)` from core, and the SDK therefore stays in the variant. Core must never import `@slack/*`. Core's `config.js` rejects a setting the profile does not allow with an error such as `githubTokenFile is not supported by the personal-local bridge.`, `githubAuth "app" is not supported by the personal-cloud bridge`, or `repositoryRouting.localRoot is not supported by the personal-cloud bridge`; it does not silently ignore it.
 
 Statements below about **app mode** (a GitHub App installation token file, `githubAuth: "app"`) apply only where the profile lists `app` in `github.modes`, which is the company variant. The other variants run in user mode.
 

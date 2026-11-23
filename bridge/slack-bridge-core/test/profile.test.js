@@ -8,11 +8,12 @@ import { createConfigApi, validateProfile } from '../src/config.js';
 const skillPath = path.resolve(import.meta.dirname, '../../../skills/fix-code');
 const make = (id, over = {}) => ({
   id, configDirName: `${id}-dir`, configEnvVar: `${id.toUpperCase().replace(/-/g, '_')}_CONFIG`, packageDir: import.meta.dirname, defaultSkillPath: skillPath,
-  github: { modes: ['user'], tokenFile: false, forbidRuntimeTokenEnv: false }, routing: { localRoot: true }, ...over
+  github: { modes: ['user'], tokenFile: false, requireTokenFile: false, forbidRuntimeTokenEnv: false }, routing: { localRoot: true, aliases: true }, ...over
 });
 const personal = make('personal-local');
-const company = make('company', { github: { modes: ['user', 'app'], tokenFile: true, forbidRuntimeTokenEnv: true } });
-const noLocal = make('personal-cloud', { routing: { localRoot: false }, github: { modes: ['user'], tokenFile: true, forbidRuntimeTokenEnv: true } });
+const company = make('company', { github: { modes: ['user', 'app'], tokenFile: true, requireTokenFile: false, forbidRuntimeTokenEnv: true } });
+const noLocal = make('personal-cloud', { routing: { localRoot: false, aliases: true }, github: { modes: ['user'], tokenFile: true, requireTokenFile: false, forbidRuntimeTokenEnv: true } });
+const cloud = make('personal-cloud', { routing: { localRoot: false, aliases: false }, github: { modes: ['user'], tokenFile: true, requireTokenFile: true, forbidRuntimeTokenEnv: true } });
 
 function fixture(t, extra = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-profile-'));
@@ -68,4 +69,29 @@ test('validateProfile rejects malformed profiles', () => {
   assert.throws(() => validateProfile({ ...company, github: { ...company.github, tokenFile: 'yes' } }), /booleans/);
   assert.throws(() => validateProfile({ ...personal, github: { ...personal.github, modes: ['user', 'app'] } }), /requires github\.tokenFile/);
   assert.throws(() => validateProfile({ ...company, routing: {} }), /routing\.localRoot/);
+  assert.throws(() => validateProfile({ ...company, routing: { localRoot: true } }), /routing\.aliases/);
+  assert.throws(() => validateProfile({ ...company, routing: { localRoot: true, aliases: 'yes' } }), /routing\.aliases/);
+  assert.throws(() => validateProfile({ ...company, github: { ...company.github, requireTokenFile: undefined } }), /requireTokenFile/);
+  assert.throws(() => validateProfile({ ...personal, github: { ...personal.github, requireTokenFile: 1 } }), /requireTokenFile/);
+  assert.throws(() => validateProfile({ ...personal, github: { ...personal.github, requireTokenFile: true } }), /requireTokenFile requires github\.tokenFile/);
+  assert.equal(validateProfile(cloud), cloud);
+});
+
+test('requireTokenFile makes githubTokenFile mandatory without changing other profiles', t => {
+  const channel = { repositories: {}, repositoryRouting: { mode: 'channel' } };
+  assert.throws(() => createConfigApi(cloud).loadConfig(fixture(t, channel)), /githubTokenFile is required by the personal-cloud bridge\./);
+  assert.equal(path.basename(createConfigApi(cloud).loadConfig(fixture(t, { ...channel, githubTokenFile: './token' })).githubTokenFile), 'token');
+  assert.equal(createConfigApi(company).loadConfig(fixture(t)).githubTokenFile, undefined);
+  assert.equal(createConfigApi(personal).loadConfig(fixture(t)).githubAuth, 'user');
+});
+
+test('aliases: false rejects alias routing and a repositories map but keeps channel mode', t => {
+  const base = { githubTokenFile: './token' };
+  assert.throws(() => createConfigApi(cloud).loadConfig(fixture(t, { ...base, repositoryRouting: { mode: 'aliases' } })), /repositoryRouting\.mode "aliases" is not supported by the personal-cloud bridge\./);
+  // default mode resolves to aliases when a repositories map is present
+  assert.throws(() => createConfigApi(cloud).loadConfig(fixture(t, base)), /repositoryRouting\.mode "aliases" is not supported by the personal-cloud bridge\./);
+  assert.throws(() => createConfigApi(cloud).loadConfig(fixture(t, { ...base, repositoryRouting: { mode: 'channel' } })), /repositories .* not supported by the personal-cloud bridge\./);
+  const ok = createConfigApi(cloud).loadConfig(fixture(t, { ...base, repositories: {} }));
+  assert.equal(ok.repositoryRouting.mode, 'channel');
+  assert.equal(createConfigApi(personal).loadConfig(fixture(t)).repositoryRouting.mode, 'aliases');
 });

@@ -7,6 +7,6 @@ export default Object.freeze({
   configEnvVar: 'FIX_CODE_PERSONAL_CLOUD_CONFIG',
   packageDir: path.resolve(import.meta.dirname, '..'),
   defaultSkillPath: path.resolve(import.meta.dirname, '../../../skills/fix-code'),
-  github: Object.freeze({ modes: Object.freeze(['user']), tokenFile: true, forbidRuntimeTokenEnv: true }),
-  routing: Object.freeze({ localRoot: false })
+  github: Object.freeze({ modes: Object.freeze(['user']), tokenFile: true, requireTokenFile: true, forbidRuntimeTokenEnv: true }),
+  routing: Object.freeze({ localRoot: false, aliases: false })
 });

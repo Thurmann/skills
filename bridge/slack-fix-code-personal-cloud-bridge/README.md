@@ -8,7 +8,7 @@ This is the personal copy of the Slack bridge for an unattended cloud VM. It act
 | [Company](../slack-fix-code-company-bridge/README.md) | GitHub App installation token file | Vertex AI or Foundry via the host identity | A company-owned host |
 | **Personal cloud** (this one) | Personal access token file | Anthropic API key, or Foundry via the VM managed identity | A cloud VM, unattended |
 
-The task flow, Slack commands and safety rules are the same as in the other copies. This copy differs in four ways: its configuration lives in `~/.config/fix-code-personal-cloud-bridge` (`FIX_CODE_PERSONAL_CLOUD_CONFIG` selects another file); it authenticates with a fine-grained token from a file that the VM refreshes, so no `gh auth login` is needed; it only works on managed clones (no local checkouts); and its Slack app is named "Fix Code (Cloud)".
+The task flow, Slack commands and safety rules are the same as in the other copies. This copy differs in four ways: its configuration lives in `/etc/slack-fix-code-personal-cloud-bridge/config.json` when deployed (`--config`; `~/.config/fix-code-personal-cloud-bridge` and `FIX_CODE_PERSONAL_CLOUD_CONFIG` are for local trials); it authenticates with a fine-grained token from a file that the VM refreshes, so no `gh auth login` is needed; it only works on managed clones (no local checkouts); and its Slack app is named "Fix Code (Cloud)".
 
 ## Requirements
 
@@ -19,27 +19,33 @@ The task flow, Slack commands and safety rules are the same as in the other copi
 
 The bridge reads the `fix-code` skill from this repository (`../../skills/fix-code`), like the other copies.
 
-## 1. Install dependencies and initialize configuration
+## 1. Deploy layout and configuration
 
-On the VM, in this project directory:
+The supported setup is the systemd deployment in [`../slack-bridge-core/deploy/README.md`](../slack-bridge-core/deploy/README.md). There the bridge runs from `/opt/fix-code/bridge/slack-fix-code-personal-cloud-bridge` (cloud-init runs `npm ci --omit=dev`) and uses:
 
-```bash
-npm ci
-node src/cli.js init
-```
+| Path | Purpose |
+| --- | --- |
+| `/etc/slack-fix-code-personal-cloud-bridge/config.json` | the config, passed with `--config` by the unit (no secrets) |
+| `/etc/slack-fix-code-personal-cloud-bridge/deploy.env` | secret store settings; set `REQUIRED_SECRETS="github-pat"` here |
+| `/run/slack-fix-code-personal-cloud-bridge/` | fetched `secrets.env` (Slack tokens) and `gh-token`, recreated on every start |
+| `/var/lib/slack-fix-code-personal-cloud-bridge` | state, clones and the service user's `HOME` (with the cloud-init `.gitconfig`) |
 
-`init` creates `config.json` and `.env` in `~/.config/fix-code-personal-cloud-bridge/` (or `$XDG_CONFIG_HOME/fix-code-personal-cloud-bridge/`) with private permissions. Every command looks for configuration in this order: `--config <path>`, `FIX_CODE_PERSONAL_CLOUD_CONFIG`, `./config.json`, then the config home above. A `.env` beside the chosen `config.json` is loaded automatically; variables already set in the environment win. Keep the service user's home private, because the `.env` holds the Slack tokens.
+Every command also accepts `--config <path>`. The Slack tokens come from the service environment (`secrets.env`), so no `.env` file is needed. `gh auth setup-git` is not needed either: cloud-init writes the equivalent credential helper to the service user's `.gitconfig`; set your name and GitHub noreply email in it (see the deploy README).
+
+This variant **requires** `githubTokenFile` and works only on managed clones: a missing token file setting, `repositoryRouting.mode: "aliases"` or a `repositories` map is rejected at load.
+
+Trying it locally first (optional, not for production): `npm ci && node src/cli.js init` creates `config.json` and `.env` in `~/.config/fix-code-personal-cloud-bridge/` (or `$XDG_CONFIG_HOME/...`). Without `--config`, lookup is `FIX_CODE_PERSONAL_CLOUD_CONFIG`, `./config.json`, then that directory. A `.env` beside the config is loaded; variables already in the environment win. You still need a `githubTokenFile`.
 
 ## 2. Create the Slack app
 
-Follow the Slack app steps in the [local personal bridge README](../slack-fix-code-personal-bridge/README.md). Use `slack-app-manifest.json` from this project; its app is named "Fix Code (Cloud)", so it can coexist with your other bridges. Put the `xapp-` and `xoxb-` tokens into the `.env` beside the cloud `config.json`, never into chat or Git.
+Follow the Slack app steps in the [local personal bridge README](../slack-fix-code-personal-bridge/README.md). Use `slack-app-manifest.json` from this project; its app is named "Fix Code (Cloud)", so it can coexist with your other bridges. Store the `xapp-` and `xoxb-` tokens as the `slack-app-token` and `slack-bot-token` secrets in your secret store (when trying locally, in the `.env` beside `config.json`), never in chat or Git.
 
 ## 3. Fill `config.json`
 
-Start from `config.example.json` (created by `init`). Replace `teamId`, `allowedUsers` and `allowedChannels` with your IDs. The loader stops at the first placeholder it finds, so it reports these one at a time. The config differs from the other copies here:
+Start from `config.example.json` (created by `init`; on the VM copy it to `/etc/slack-fix-code-personal-cloud-bridge/config.json`). Replace `teamId`, `allowedUsers` and `allowedChannels` with your IDs. The loader stops at the first placeholder it finds, so it reports these one at a time. The config differs from the other copies here:
 
 - **No `githubAuth`.** User mode is the default, and this profile rejects `"app"`.
-- **`githubTokenFile`** points at the token file described below. The file is read on every `gh` and `git` spawn, so a refreshed token takes effect without a restart.
+- **`githubTokenFile`** is required and points at the token file described below. The file is read on every `gh` and `git` spawn, so a refreshed token takes effect without a restart.
 - **`stateDir`** is `/var/lib/slack-fix-code-personal-cloud-bridge`. The state holds the task database and runner session IDs, so keep it on the VM only.
 - **`repositoryRouting`** uses `mode: "channel"` and managed clones under `cloneRoot`. There is no `localRoot`, because the VM does not keep your working checkouts. Set `allowedOwners` to your GitHub user (and any organizations you want to allow) so the channel resolver cannot pick a same-named repository elsewhere.
 - **`runtimes.<name>.env`** lists the only extra variables forwarded to each CLI. Names such as `GH_TOKEN`, `GITHUB_TOKEN` and `SLACK_*` are rejected.
@@ -48,7 +54,7 @@ Other keys (`timeoutMs`, `maxRepairRounds`, `allowNetwork`, `models`, `allowedMo
 
 ## GitHub token file
 
-The VM needs one file that contains exactly one fine-grained personal access token. Keep it outside the repository, for example `/run/slack-fix-code-personal-cloud-bridge/gh-token`, readable only by the bridge user. With the [cloud deployment](../slack-bridge-core/deploy/README.md), `fetch-secrets.sh` writes this file from the `github-pat` secret before every start; to rotate the token, update the secret and restart the service.
+The VM needs one file that contains exactly one fine-grained personal access token. Keep it outside the repository, for example `/run/slack-fix-code-personal-cloud-bridge/gh-token`, readable only by the bridge user. With the [cloud deployment](../slack-bridge-core/deploy/README.md), set `REQUIRED_SECRETS="github-pat"` in `deploy.env`; `fetch-secrets.sh` then fails the start if the secret is missing, and writes this file from the `github-pat` secret before every start; to rotate the token, update the secret and restart the service.
 
 Grant the token access to only the repositories the bridge should change, with these permissions:
 
@@ -87,7 +93,7 @@ For Codex, put `OPENAI_API_KEY` in the service environment. The example also lis
 
 ## Deploy to the cloud
 
-See [`../slack-bridge-core/deploy/README.md`](../slack-bridge-core/deploy/README.md) for the VM setup: a generic Linux VM run by systemd, with Azure as the default worked example. It covers the bridge user, the token file refresh, the `EnvironmentFile`, the state directory and the unit file.
+See [`../slack-bridge-core/deploy/README.md`](../slack-bridge-core/deploy/README.md) (section 1 above has the layout) for the VM setup: a generic Linux VM run by systemd, with Azure as the default worked example. It covers the bridge user, the token file refresh, the `EnvironmentFile`, the state directory and the unit file.
 
 ## 4. Run diagnostics, then connect
 
