@@ -190,3 +190,11 @@ test('a config without skillPath uses the repository skill', t => {
   const f = fixture(t); delete f.config.skillPath;
   assert.equal(loadConfig(f.save()).skillPath, defaultSkill);
 });
+
+test('GitHub token file and githubAuth settings are rejected because this bridge only supports the signed-in gh user', t => {
+  const f = fixture(t);
+  f.config.githubTokenFile = './token';
+  assert.throws(() => loadConfig(f.save()), /githubTokenFile is not supported by the personal-local bridge\./);
+  delete f.config.githubTokenFile; f.config.githubAuth = 'app';
+  assert.throws(() => loadConfig(f.save()), /githubAuth is not supported by the personal-local bridge\./);
+});
