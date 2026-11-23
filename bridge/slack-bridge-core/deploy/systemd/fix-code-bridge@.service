@@ -1,0 +1,40 @@
+# Template unit. The instance name is the bridge variant directory, e.g.
+#   systemctl enable --now fix-code-bridge@slack-fix-code-personal-cloud-bridge
+[Unit]
+Description=fix-code Slack bridge (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fixcode
+Group=fixcode
+WorkingDirectory=/opt/fix-code/bridge/%i
+Environment=HOME=/var/lib/%i
+# Non-secret settings (e.g. CLAUDE_CODE_USE_FOUNDRY=1) and fetched secrets (Slack tokens, API keys).
+EnvironmentFile=-/etc/%i/bridge.env
+EnvironmentFile=-/run/%i/secrets.env
+# Runs as root ("+") so it can fetch secrets with the machine identity and hand them to fixcode.
+ExecStartPre=+/opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i
+ExecStart=/usr/bin/node src/cli.js start --config /etc/%i/config.json
+Restart=on-failure
+RestartSec=10
+StateDirectory=%i
+StateDirectoryMode=0700
+RuntimeDirectory=%i
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
+
+# Hardening that keeps git, gh and the coding CLIs working.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
