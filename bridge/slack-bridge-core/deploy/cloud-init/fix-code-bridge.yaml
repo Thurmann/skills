@@ -10,6 +10,9 @@ packages:
   - gnupg
 
 users:
+  # Keep the distro's default admin user (the one created by az vm create --admin-username
+  # with --generate-ssh-keys); a users: list without "default" would drop it.
+  - default
   - name: fixcode
     system: true
     shell: /usr/sbin/nologin
@@ -38,6 +41,27 @@ write_files:
       # AZURE_KEY_VAULT=<vault name>
       # AWS_SECRET_PREFIX=<prefix>
       # GCP_PROJECT=<project>
+      # FIX_CODE_SECRET_PROVIDER=azure
+      # REQUIRED_SECRETS="github-pat"     # personal-cloud; slack tokens are always required
+      # GITHUB_TOKEN_SOURCE=external      # company (GitHub App): a timer owns gh-token
+  # git for the service user: gh is the credential helper (same as `gh auth setup-git`).
+  # Set the identity to your own (personal-cloud: your GitHub noreply email;
+  # company: <app-slug>[bot] and the app's noreply email).
+  - path: /var/lib/VARIANT/.gitconfig
+    permissions: '0644'
+    owner: fixcode:fixcode
+    defer: true
+    content: |
+      [credential "https://github.com"]
+      	helper =
+      	helper = !/usr/bin/gh auth git-credential
+      [credential "https://gist.github.com"]
+      	helper =
+      	helper = !/usr/bin/gh auth git-credential
+      [user]
+      	# Placeholders: the operator must set these.
+      	name = CHANGE ME
+      	email = CHANGE_ME@users.noreply.github.com
 
 runcmd:
   # GitHub CLI from the official apt repository
@@ -49,12 +73,15 @@ runcmd:
   - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   - apt-get update
   - apt-get install -y gh nodejs
+  # Azure CLI (Microsoft's installer script; adds their apt repository). Needed for the azure
+  # secret provider; remove on AWS/GCP and install aws/gcloud instead (see deploy/README.md).
+  - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
   # Repository and dependencies
   - git clone REPO_URL /opt/fix-code
   - cd /opt/fix-code/bridge/VARIANT && npm ci --omit=dev
   - cp /opt/fix-code/bridge/slack-bridge-core/deploy/systemd/fix-code-bridge@.service /etc/systemd/system/fix-code-bridge@.service
   - systemctl daemon-reload
-  - mkdir -p /var/lib/VARIANT && chown fixcode:fixcode /var/lib/VARIANT
+  - mkdir -p /var/lib/VARIANT && chown fixcode:fixcode /var/lib/VARIANT && chown fixcode:fixcode /var/lib/VARIANT/.gitconfig
   - chmod 0750 /etc/VARIANT && chown root:fixcode /etc/VARIANT
   # Optional coding CLI (uncomment, or run by hand): 
   # - npm install -g @anthropic-ai/claude-code

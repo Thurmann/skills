@@ -10,6 +10,8 @@ Type=simple
 User=fixcode
 Group=fixcode
 WorkingDirectory=/opt/fix-code/bridge/%i
+# HOME is writable by fixcode and the coding agents. fetch-secrets.sh (root) does NOT trust it:
+# it runs the cloud CLIs with its own root-only HOME and a scrubbed environment.
 Environment=HOME=/var/lib/%i
 # Non-secret settings (e.g. CLAUDE_CODE_USE_FOUNDRY=1) and fetched secrets (Slack tokens, API keys).
 EnvironmentFile=-/etc/%i/bridge.env
