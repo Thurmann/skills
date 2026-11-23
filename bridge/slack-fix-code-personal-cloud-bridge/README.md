@@ -40,7 +40,7 @@ Start from `config.example.json` (created by `init`). Replace `teamId`, `allowed
 
 - **No `githubAuth`.** User mode is the default, and this profile rejects `"app"`.
 - **`githubTokenFile`** points at the token file described below. The file is read on every `gh` and `git` spawn, so a refreshed token takes effect without a restart.
-- **`stateDir`** is `/var/lib/fix-code-personal-cloud-bridge`. The state holds the task database and runner session IDs, so keep it on the VM only.
+- **`stateDir`** is `/var/lib/slack-fix-code-personal-cloud-bridge`. The state holds the task database and runner session IDs, so keep it on the VM only.
 - **`repositoryRouting`** uses `mode: "channel"` and managed clones under `cloneRoot`. There is no `localRoot`, because the VM does not keep your working checkouts. Set `allowedOwners` to your GitHub user (and any organizations you want to allow) so the channel resolver cannot pick a same-named repository elsewhere.
 - **`runtimes.<name>.env`** lists the only extra variables forwarded to each CLI. Names such as `GH_TOKEN`, `GITHUB_TOKEN` and `SLACK_*` are rejected.
 
@@ -48,7 +48,7 @@ Other keys (`timeoutMs`, `maxRepairRounds`, `allowNetwork`, `models`, `allowedMo
 
 ## GitHub token file
 
-The VM needs one file that contains exactly one fine-grained personal access token. Keep it outside the repository, for example `/run/fix-code-personal-cloud-bridge/gh-token`, readable only by the bridge user. A refresh job (or your secret store agent) rewrites it when the token rotates.
+The VM needs one file that contains exactly one fine-grained personal access token. Keep it outside the repository, for example `/run/slack-fix-code-personal-cloud-bridge/gh-token`, readable only by the bridge user. With the [cloud deployment](../slack-bridge-core/deploy/README.md), `fetch-secrets.sh` writes this file from the `github-pat` secret before every start; to rotate the token, update the secret and restart the service.
 
 Grant the token access to only the repositories the bridge should change, with these permissions:
 
