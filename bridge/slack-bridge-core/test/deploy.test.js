@@ -61,8 +61,20 @@ test('fetch-secrets.sh dry-runs and validates input', () => {
 
 test('systemd unit matches the variant layout', () => {
   const unit = fs.readFileSync(path.join(deploy, 'systemd', 'fix-code-bridge@.service'), 'utf8');
-  for (const s of ['ExecStart=/usr/bin/node src/cli.js start --config /etc/%i/config.json', 'WorkingDirectory=/opt/fix-code/bridge/%i', 'ExecStartPre=+/opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i', 'EnvironmentFile=-/run/%i/secrets.env', 'StateDirectory=%i', 'RuntimeDirectory=%i', 'NoNewPrivileges=true']) assert.ok(unit.includes(s), s);
+  for (const s of ['ExecStart=/usr/bin/node src/cli.js start --config /etc/%i/config.json', 'WorkingDirectory=/opt/fix-code/bridge/%i', 'ExecStartPre=+/opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i', 'EnvironmentFile=-/run/fix-code-secrets/%i/secrets.env', 'StateDirectory=%i', 'NoNewPrivileges=true']) assert.ok(unit.includes(s), s);
   assert.ok(fs.existsSync(path.join(deploy, 'bin', 'fetch-secrets.sh')));
+  const envFiles = unit.split('\n').filter(l => l.startsWith('EnvironmentFile='));
+  assert.ok(envFiles.some(l => l.includes('/run/fix-code-secrets/%i/')));
+  for (const l of envFiles) assert.ok(!l.includes('/run/%i'), l);
+  assert.ok(!/^RuntimeDirectory/m.test(unit));
+});
+
+test('fetch-secrets.sh uses an absolute shebang and re-executes under a clean env as root', () => {
+  const src = fs.readFileSync(path.join(deploy, 'bin', 'fetch-secrets.sh'), 'utf8');
+  assert.ok(src.startsWith('#!/bin/bash\n'));
+  assert.ok(src.includes('exec /usr/bin/env -i FIX_CODE_CLEAN_ENV=1'));
+  assert.ok(src.includes('"$(id -u)" = 0'));
+  assert.ok(fs.readFileSync(path.join(deploy, 'azure', 'provision.sh'), 'utf8').startsWith('#!/bin/bash\n'));
 });
 
 test('cloud-init starts with #cloud-config and parses when PyYAML exists', t => {
@@ -109,18 +121,19 @@ exit 1
   for (const c of ['az', 'aws', 'gcloud']) fs.writeFileSync(path.join(bin, c), script, { mode: 0o755 });
   fs.writeFileSync(path.join(etc, variant, 'deploy.env'), `AZURE_KEY_VAULT=kv-test\nAWS_SECRET_PREFIX=fix/${variant}\nGCP_PROJECT=proj\n${deployEnv}`);
   const env = { FIX_CODE_DEPLOY_ETC: etc, FIX_CODE_DEPLOY_RUN: run, FIX_CODE_USER: os.userInfo().username, FIX_CODE_DEPLOY_CLI_PATH: `${bin}:/usr/bin:/bin`, PATH: `${bin}:${process.env.PATH}`, HOME: home };
-  return { base, etc, run, bin, home, log, env, runDir: path.join(run, variant), go: (args = []) => sh('bin/fetch-secrets.sh', [variant, ...args], env) };
+  return { base, etc, run, bin, home, log, env, runDir: path.join(run, 'fix-code-secrets', variant), go: (args = []) => sh('bin/fetch-secrets.sh', [variant, ...args], env) };
 }
 const mode = f => fs.statSync(f).mode & 0o777;
 
-test('azure path writes secrets.env and gh-token with mode 0600', t => {
+test('azure path writes secrets.env (0600) and gh-token (0640)', t => {
   const fx = fixture(t);
   const r = fx.go();
   assert.equal(r.status, 0, r.stderr);
   const env = path.join(fx.runDir, 'secrets.env');
   assert.equal(fs.readFileSync(env, 'utf8'), 'SLACK_BOT_TOKEN=xoxb-1\nSLACK_APP_TOKEN=xapp-1\nANTHROPIC_API_KEY=sk-1\n');
   assert.equal(fs.readFileSync(path.join(fx.runDir, 'gh-token'), 'utf8'), 'ghp_1\n');
-  assert.equal(mode(env), 0o600); assert.equal(mode(path.join(fx.runDir, 'gh-token')), 0o600);
+  assert.equal(mode(env), 0o600); assert.equal(mode(path.join(fx.runDir, 'gh-token')), 0o640);
+  assert.equal(mode(fx.runDir), 0o750);
   assert.ok(!r.stdout.includes('xoxb') && !r.stderr.includes('xoxb'));
   assert.ok(fs.readFileSync(fx.log, 'utf8').includes('ARGS=keyvault secret show --vault-name kv-test'));
 });
@@ -207,4 +220,18 @@ test('cloud-init keeps the default user, installs the Azure CLI and writes .gitc
   assert.match(y, /users:\n(  #.*\n)*  - default\n/);
   assert.ok(y.includes('InstallAzureCLIDeb'));
   assert.ok(y.includes('/var/lib/VARIANT/.gitconfig') && y.includes('helper = !/usr/bin/gh auth git-credential'));
+});
+
+test('az stderr with only "was not found" (no SecretNotFound) is an error for an optional secret', t => {
+  const fx = fixture(t, { fakes: { errors: { 'github-pat': 'ERROR: The Vault was not found' } } });
+  const r = fx.go();
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Failed to fetch secret github-pat/);
+});
+
+test('REQUIRED_SECRETS is split without glob expansion', t => {
+  const fx = fixture(t, { deployEnv: 'REQUIRED_SECRETS="*"\n' });
+  const r = sh('bin/fetch-secrets.sh', [variant], { ...fx.env });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /Invalid name in REQUIRED_SECRETS: \*/);
 });

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Provision an outbound-only Azure VM for a fix-code bridge variant.
 # Usage: provision.sh --variant <dir> [--resource-group RG] [--location LOC] [--name NAME]
 #                     [--vault NAME] [--foundry-resource-id ARM_ID] [--repo-url URL] [--dry-run]

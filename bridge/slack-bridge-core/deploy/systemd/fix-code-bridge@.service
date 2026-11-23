@@ -15,7 +15,9 @@ WorkingDirectory=/opt/fix-code/bridge/%i
 Environment=HOME=/var/lib/%i
 # Non-secret settings (e.g. CLAUDE_CODE_USE_FOUNDRY=1) and fetched secrets (Slack tokens, API keys).
 EnvironmentFile=-/etc/%i/bridge.env
-EnvironmentFile=-/run/%i/secrets.env
+# secrets.env lives in a ROOT-owned directory (not a RuntimeDirectory of this unit): systemd applies
+# EnvironmentFile to the root ExecStartPre too, so fixcode must never be able to rewrite it.
+EnvironmentFile=-/run/fix-code-secrets/%i/secrets.env
 # Runs as root ("+") so it can fetch secrets with the machine identity and hand them to fixcode.
 ExecStartPre=+/opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i
 ExecStart=/usr/bin/node src/cli.js start --config /etc/%i/config.json
@@ -23,9 +25,6 @@ Restart=on-failure
 RestartSec=10
 StateDirectory=%i
 StateDirectoryMode=0700
-RuntimeDirectory=%i
-RuntimeDirectoryMode=0750
-RuntimeDirectoryPreserve=restart
 
 # Hardening that keeps git, gh and the coding CLIs working.
 NoNewPrivileges=true

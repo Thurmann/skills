@@ -353,7 +353,7 @@ Ctrl+C sends a graceful shutdown/cancel request. Do not delete worktrees or stat
 
 For a Linux VM run by systemd (cloud-init, the Azure provisioning example, secret fetching), see [`../slack-bridge-core/deploy/README.md`](../slack-bridge-core/deploy/README.md). There the company variant takes its token from a GitHub App installation token that a root-run timer writes; no personal token is involved.
 
-With the systemd template, keep the timer-owned token path `/run/fix-code-bridge/gh-token` in `githubTokenFile` (and in the `gh auth setup-git` command above), a directory owned by the refresh timer rather than by the unit (the unit's `/run/slack-fix-code-company-bridge/` is recreated on each start). Set `GITHUB_TOKEN_SOURCE=external` in `/etc/slack-fix-code-company-bridge/deploy.env` so `fetch-secrets.sh` never fetches or writes `gh-token`, and do not store a `github-pat` secret for this app-mode deployment.
+With the systemd template, keep the timer-owned token path `/run/fix-code-bridge/gh-token` in `githubTokenFile` (and in the `gh auth setup-git` command above), a directory owned by the refresh timer rather than by the unit (the unit's secrets directory `/run/fix-code-secrets/slack-fix-code-company-bridge/` is recreated on each start). Set `GITHUB_TOKEN_SOURCE=external` in `/etc/slack-fix-code-company-bridge/deploy.env` so `fetch-secrets.sh` never fetches or writes `gh-token`, and do not store a `github-pat` secret for this app-mode deployment.
 
 ## Tests and development
 
