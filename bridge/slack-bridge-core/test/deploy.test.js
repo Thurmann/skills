@@ -8,7 +8,16 @@ import { fileURLToPath } from 'node:url';
 
 const deploy = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'deploy');
 const variant = 'slack-fix-code-personal-cloud-bridge';
-const sh = (script, args, env = {}) => spawnSync('bash', [path.join(deploy, script), ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: os.tmpdir(), ...env } });
+// Tripwire: dry runs must never reach a real cloud CLI. These fakes shadow az/aws/gcloud on PATH and record any call.
+const tripwire = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-tripwire-'));
+const tripwireLog = path.join(tripwire, 'calls.log');
+for (const cli of ['az', 'aws', 'gcloud']) fs.writeFileSync(path.join(tripwire, cli), `#!/bin/sh\necho "${cli} $*" >> '${tripwireLog}'\nexit 99\n`, { mode: 0o755 });
+const assertNoCloudCalls = () => assert.ok(!fs.existsSync(tripwireLog), `dry run invoked a cloud CLI: ${fs.existsSync(tripwireLog) ? fs.readFileSync(tripwireLog, 'utf8') : ''}`);
+const sh = (script, args, env = {}) => {
+  const r = spawnSync('bash', [path.join(deploy, script), ...args], { encoding: 'utf8', env: { PATH: `${tripwire}:${process.env.PATH}`, HOME: process.env.HOME, TMPDIR: os.tmpdir(), ...env } });
+  if (args.includes('--dry-run')) assertNoCloudCalls();
+  return r;
+};
 const foundryId = '/subscriptions/abc-1/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/f1';
 const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]);
 
