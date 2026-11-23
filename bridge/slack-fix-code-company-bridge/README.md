@@ -1,6 +1,12 @@
 # Fix Code Slack Bridge (company)
 
-This is the company copy of the Slack bridge, for a company-owned host. The [personal copy](../slack-fix-code-personal-bridge) is a separate project with its own config home, state and Slack app. This copy differs in four ways: its configuration lives in `~/.config/fix-code-company-bridge` (`FIX_CODE_COMPANY_CONFIG` selects another file); it can authenticate to GitHub as a GitHub App installation with short-lived tokens; it can run Claude through Vertex AI or Microsoft Foundry; and its Slack app is named "Fix Code (Company)". The task flow and safety rules are otherwise the same.
+This is the company variant of the Slack bridge, for a company-owned host. It is a thin package over [`../slack-bridge-core`](../slack-bridge-core/README.md), which holds the shared task flow, queue, runner, Git and routing code; the variant supplies its profile (`src/profile.js`) and Slack SDK wiring (`src/cli.js`). There are three variants:
+
+- [`slack-fix-code-personal-bridge`](../slack-fix-code-personal-bridge/README.md): your local Mac or workstation, using your `gh` login.
+- [`slack-fix-code-personal-cloud-bridge`](../slack-fix-code-personal-cloud-bridge/README.md): your personal GitHub token on an unattended cloud VM.
+- `slack-fix-code-company-bridge` (this one): company GitHub App tokens and Vertex AI or Microsoft Foundry.
+
+This variant's profile allows GitHub user mode and GitHub App mode (`githubAuth: "app"`, with a token file), and local checkout reuse (`repositoryRouting.localRoot`). Its configuration lives in `~/.config/fix-code-company-bridge` (`FIX_CODE_COMPANY_CONFIG` selects another file); it can run Claude through Vertex AI or Microsoft Foundry; and its Slack app is named "Fix Code (Company)". The task flow and safety rules are the same across variants. The [architecture notes](../slack-bridge-core/docs/architecture.md) cover the shared design.
 
 Send a task from Slack on your phone, let a local coding runner use `fix-code`, and receive a pull request in the same Slack thread (ready for review when verification is complete, otherwise a draft).
 
@@ -343,6 +349,12 @@ node src/cli.js outbox retry OUTBOX_ID --confirmed-not-delivered
 
 Ctrl+C sends a graceful shutdown/cancel request. Do not delete worktrees or state to resolve a failure. If publication had started, inspect the actual branch and PR before retrying. Existing PR lookup prevents normal retry duplication, but remote effects cannot be atomically committed with SQLite.
 
+## Deploy to the cloud
+
+For a Linux VM run by systemd (cloud-init, the Azure provisioning example, secret fetching), see [`../slack-bridge-core/deploy/README.md`](../slack-bridge-core/deploy/README.md). There the company variant takes its token from a GitHub App installation token that a root-run timer writes; no personal token is involved.
+
+With the systemd template, the unit's runtime directory is `/run/slack-fix-code-company-bridge/`. systemd creates it when the unit starts and removes it when the unit stops, so set `githubTokenFile` to `/run/slack-fix-code-company-bridge/gh-token` and have the refresh timer write that file after the unit starts. If your timer writes to a directory it owns instead, keep the existing path (for example `/run/fix-code-bridge/gh-token`) in `githubTokenFile` and in the `gh auth setup-git` command above.
+
 ## Tests and development
 
 ```bash
@@ -353,4 +365,6 @@ python3 ../../skills/fix-code/scripts/test_git_guard.py
 
 Tests use fake Slack transports/model executables and disposable Git repositories. GitHub publication is replaced with a local fixture. No live Slack messages, model inference, or real PRs are needed for these checks. The Git integration fixture verifies the explicit push refspec and PR reuse, not a network push.
 
-See [architecture and limitations](docs/architecture.md) for component boundaries and deployment considerations.
+Shared tests for the core live in `../slack-bridge-core`: `cd ../slack-bridge-core && npm test`. The commands above cover this variant's profile, configuration and wiring.
+
+See [architecture and limitations](../slack-bridge-core/docs/architecture.md) for component boundaries and deployment considerations.

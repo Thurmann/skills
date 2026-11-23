@@ -20,7 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [slack-fix-code-personal-bridge, slack-fix-code-company-bridge]
+        # The whole repository is checked out, so variants can resolve file:../slack-bridge-core.
+        package: [slack-bridge-core, slack-fix-code-personal-bridge, slack-fix-code-personal-cloud-bridge, slack-fix-code-company-bridge]
     defaults:
       run:
         working-directory: bridge/${{ matrix.package }}
