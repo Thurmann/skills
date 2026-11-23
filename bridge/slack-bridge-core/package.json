@@ -8,6 +8,6 @@
   "exports": { "./*": "./src/*" },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "check": "for f in src/*.js src/providers/*.js; do node --check $f || exit 1; done"
+    "check": "for f in src/*.js src/providers/*.js; do node --check $f || exit 1; done; for f in deploy/bin/*.sh deploy/azure/*.sh; do bash -n $f || exit 1; done"
   }
 }
