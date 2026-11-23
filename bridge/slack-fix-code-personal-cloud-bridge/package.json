@@ -1,0 +1,19 @@
+{
+  "name": "fix-code-slack-personal-cloud-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Slack Socket Mode task bridge for the fix-code coding skill (personal GitHub identity via a token file, personal model credentials, unattended on a cloud host with managed clones)",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "node src/cli.js start",
+    "doctor": "node src/cli.js doctor",
+    "test": "node --test test/*.test.js",
+    "check": "for f in src/*.js; do node --check $f || exit 1; done && node -e \"import('slack-bridge-core/cli.js')\""
+  },
+  "dependencies": {
+    "slack-bridge-core": "file:../slack-bridge-core",
+    "@slack/socket-mode": "^2.0.0",
+    "@slack/web-api": "^7.0.0"
+  }
+}
