@@ -27,7 +27,7 @@ The supported setup is the systemd deployment in [`../slack-bridge-core/deploy/R
 | --- | --- |
 | `/etc/slack-fix-code-personal-cloud-bridge/config.json` | the config, passed with `--config` by the unit (no secrets) |
 | `/etc/slack-fix-code-personal-cloud-bridge/deploy.env` | secret store settings; set `REQUIRED_SECRETS="github-pat"` here |
-| `/run/slack-fix-code-personal-cloud-bridge/` | fetched `secrets.env` (Slack tokens) and `gh-token`, recreated on every start |
+| `/run/fix-code-secrets/slack-fix-code-personal-cloud-bridge/` | root-owned: fetched `secrets.env` (Slack tokens, root only) and `gh-token` (root:bridge user, 0640), recreated on every start |
 | `/var/lib/slack-fix-code-personal-cloud-bridge` | state, clones and the service user's `HOME` (with the cloud-init `.gitconfig`) |
 
 Every command also accepts `--config <path>`. The Slack tokens come from the service environment (`secrets.env`), so no `.env` file is needed. `gh auth setup-git` is not needed either: cloud-init writes the equivalent credential helper to the service user's `.gitconfig`; set your name and GitHub noreply email in it (see the deploy README).
@@ -54,7 +54,7 @@ Other keys (`timeoutMs`, `maxRepairRounds`, `allowNetwork`, `models`, `allowedMo
 
 ## GitHub token file
 
-The VM needs one file that contains exactly one fine-grained personal access token. Keep it outside the repository, for example `/run/slack-fix-code-personal-cloud-bridge/gh-token`, readable only by the bridge user. With the [cloud deployment](../slack-bridge-core/deploy/README.md), set `REQUIRED_SECRETS="github-pat"` in `deploy.env`; `fetch-secrets.sh` then fails the start if the secret is missing, and writes this file from the `github-pat` secret before every start; to rotate the token, update the secret and restart the service.
+The VM needs one file that contains exactly one fine-grained personal access token. Keep it outside the repository, for example `/run/fix-code-secrets/slack-fix-code-personal-cloud-bridge/gh-token`, readable by the bridge user but not writable by it. With the [cloud deployment](../slack-bridge-core/deploy/README.md), set `REQUIRED_SECRETS="github-pat"` in `deploy.env`; `fetch-secrets.sh` then fails the start if the secret is missing, and writes this file from the `github-pat` secret before every start; to rotate the token, update the secret and restart the service.
 
 Grant the token access to only the repositories the bridge should change, with these permissions:
 

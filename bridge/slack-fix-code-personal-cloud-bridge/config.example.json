@@ -15,7 +15,7 @@
   "stateDir": "/var/lib/slack-fix-code-personal-cloud-bridge",
   "pythonPath": "python3",
   "ghPath": "gh",
-  "githubTokenFile": "/run/slack-fix-code-personal-cloud-bridge/gh-token",
+  "githubTokenFile": "/run/fix-code-secrets/slack-fix-code-personal-cloud-bridge/gh-token",
   "allowNetwork": true,
   "repositoryRouting": {
     "mode": "channel",

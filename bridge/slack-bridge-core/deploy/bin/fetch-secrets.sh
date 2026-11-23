@@ -1,17 +1,29 @@
-#!/usr/bin/env bash
-# Fetch bridge secrets from a cloud secret store into /run/<variant> (tmpfs).
+#!/bin/bash
+# Fetch bridge secrets from a cloud secret store into /run/fix-code-secrets/<variant> (tmpfs).
 # Usage: fetch-secrets.sh <variant> [--provider azure|aws|gcp|none] [--dry-run]
 # Settings come from /etc/<variant>/deploy.env (root-owned, sourced):
 #   FIX_CODE_SECRET_PROVIDER=azure|aws|gcp|none   (--provider flag wins; default azure)
 #   AZURE_KEY_VAULT=<vault>   AWS_SECRET_PREFIX=<prefix>   GCP_PROJECT=<project>
 #   REQUIRED_SECRETS="github-pat ..."   extra secrets that must exist (slack tokens always are)
 #   GITHUB_TOKEN_SOURCE=external        a timer owns gh-token (company/app mode): never fetch or write it
-# Files written (owner fixcode, mode 0600):
-#   /run/<variant>/secrets.env   SLACK_BOT_TOKEN, SLACK_APP_TOKEN, optional ANTHROPIC_API_KEY
-#   /run/<variant>/gh-token      optional github-pat (personal-cloud token file)
+# Layout (all root-owned so the unprivileged service user, and the coding agents it runs, cannot
+# replace the files systemd loads as root):
+#   /run/fix-code-secrets/            root:root 0711
+#   /run/fix-code-secrets/<variant>/  root:fixcode 0750
+#   .../secrets.env   root:root 0600     SLACK_BOT_TOKEN, SLACK_APP_TOKEN, optional ANTHROPIC_API_KEY
+#                                        (systemd reads it as root; the bridge never opens it)
+#   .../gh-token      root:fixcode 0640  optional github-pat (personal-cloud token file)
+# As root the script re-executes itself under "env -i" with a fixed PATH, and ignores the
+# FIX_CODE_DEPLOY_* / FIX_CODE_USER test overrides. FIX_CODE_SECRET_PROVIDER from the caller's
+# environment is therefore NOT honoured as root: use --provider or deploy.env (root-owned).
 # A secret is "absent" only on a confirmed not-found from the CLI. Any other failure aborts the
 # run and leaves the existing files untouched.
 set -euo pipefail
+
+# Defense in depth: as root, drop whatever environment the unit passed (BASH_ENV, PATH, ...).
+if [ "$(id -u)" = 0 ] && [ -z "${FIX_CODE_CLEAN_ENV:-}" ]; then
+  exec /usr/bin/env -i FIX_CODE_CLEAN_ENV=1 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash "$0" "$@"
+fi
 
 usage() { echo "Usage: $0 <variant> [--provider azure|aws|gcp|none] [--dry-run]" >&2; exit 2; }
 
@@ -30,13 +42,18 @@ done
 [ -n "$variant" ] || usage
 [[ "$variant" =~ ^[a-z0-9-]+$ ]] || { echo "Invalid variant name: $variant" >&2; exit 2; }
 
+is_root=0
+[ "$(id -u)" -ne 0 ] || is_root=1
+if [ "$is_root" -eq 1 ]; then
+  # Test overrides are for unprivileged runs only; as root they are never honoured.
+  unset FIX_CODE_DEPLOY_ETC FIX_CODE_DEPLOY_RUN FIX_CODE_DEPLOY_CLI_PATH FIX_CODE_DEPLOY_CLI_HOME FIX_CODE_USER
+fi
 etc_root="${FIX_CODE_DEPLOY_ETC:-/etc}"
 run_root="${FIX_CODE_DEPLOY_RUN:-/run}"
 service_user="${FIX_CODE_USER:-fixcode}"
 deploy_env="$etc_root/$variant/deploy.env"
-run_dir="$run_root/$variant"
-is_root=0
-[ "$(id -u)" -ne 0 ] || is_root=1
+secrets_root="$run_root/fix-code-secrets"
+run_dir="$secrets_root/$variant"
 
 file_stat() { stat -c '%u %a' "$1" 2>/dev/null || stat -f '%u %Lp' "$1"; }
 
@@ -70,8 +87,9 @@ fi
 
 token_source="${GITHUB_TOKEN_SOURCE:-}"
 required=(slack-bot-token slack-app-token)
-# shellcheck disable=SC2206
-extra_required=(${REQUIRED_SECRETS:-})
+# Split on whitespace without glob expansion (read does not expand patterns).
+extra_required=()
+read -r -a extra_required <<< "${REQUIRED_SECRETS:-}" || true
 for s in ${extra_required[@]+"${extra_required[@]}"}; do
   case "$s" in
     github-pat|anthropic-api-key) required+=("$s") ;;
@@ -101,7 +119,7 @@ if [ "$dry" -eq 1 ]; then
   for name in "${secrets[@]}"; do
     echo "[dry-run] $(describe "$name")"
   done
-  echo "[dry-run] write $run_dir/secrets.env and $run_dir/gh-token atomically (mode 0600, owner $service_user)"
+  echo "[dry-run] write $run_dir/secrets.env (root:root 0600) and $run_dir/gh-token (root:$service_user 0640) atomically"
   exit 0
 fi
 
@@ -150,7 +168,25 @@ case "$provider" in
   gcp) [ -n "${GCP_PROJECT:-}" ] || { echo "GCP_PROJECT is not set in $deploy_env" >&2; exit 2; } ;;
 esac
 
-mkdir -p "$run_dir"
+# ensure_dir <path> <mode> <group>: create or tighten a directory. As root it refuses symlinks and
+# directories owned by anyone else, then enforces root:<group> and the mode.
+ensure_dir() {
+  local d="$1" m="$2" g="$3" owner mode
+  if [ "$is_root" -eq 1 ]; then
+    [ ! -L "$d" ] || { echo "$d is a symlink" >&2; exit 1; }
+    mkdir -p "$d"
+    [ ! -L "$d" ] && [ -d "$d" ] || { echo "$d is not a plain directory" >&2; exit 1; }
+    read -r owner mode < <(file_stat "$d")
+    [ "$owner" = 0 ] || { echo "$d must be owned by root" >&2; exit 1; }
+    chown "root:$g" "$d"
+  else
+    mkdir -p "$d"
+  fi
+  chmod "$m" "$d"
+}
+if [ "$is_root" -eq 1 ]; then root_group=root; dir_group="$service_user"; else root_group="$(id -gn)"; dir_group="$root_group"; fi
+ensure_dir "$secrets_root" 0711 "$root_group"
+ensure_dir "$run_dir" 0750 "$dir_group"
 tmp_dir="$(mktemp -d "$run_dir/.fetch.XXXXXX")"
 
 if [ "$provider" = azure ]; then
@@ -176,7 +212,7 @@ fetch_secret() {
   fi
   secret_value=""
   case "$provider" in
-    azure) case "$err" in *SecretNotFound*|*"was not found"*) not_found=1 ;; esac ;;
+    azure) case "$err" in *SecretNotFound*) not_found=1 ;; esac ;;
     aws) case "$err" in *ResourceNotFoundException*) not_found=1 ;; esac ;;
     gcp) case "$err" in *NOT_FOUND*) not_found=1 ;; esac ;;
   esac
@@ -220,8 +256,13 @@ fi
 # Everything was fetched: now replace the files.
 for f in secrets.env gh-token; do
   [ -f "$tmp_dir/$f" ] || continue
-  chmod 0600 "$tmp_dir/$f"
-  if [ "$is_root" -eq 1 ]; then chown "$service_user:$service_user" "$tmp_dir/$f"; fi
+  if [ "$f" = gh-token ]; then
+    chmod 0640 "$tmp_dir/$f"
+    if [ "$is_root" -eq 1 ]; then chown "root:$service_user" "$tmp_dir/$f"; fi
+  else
+    chmod 0600 "$tmp_dir/$f"
+    if [ "$is_root" -eq 1 ]; then chown root:root "$tmp_dir/$f"; fi
+  fi
   mv -f "$tmp_dir/$f" "$run_dir/$f"
 done
 # A confirmed-absent optional github-pat must not leave a stale token behind.

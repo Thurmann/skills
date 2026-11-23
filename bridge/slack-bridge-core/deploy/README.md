@@ -5,7 +5,7 @@ The model is cloud-generic: any Linux VM, a machine identity, a secret store and
 - The bridge uses Slack Socket Mode: it only makes outbound connections. Open no inbound ports.
 - The whole repository is deployed to `/opt/fix-code` (the bridge reads the skill from `/opt/fix-code/skills/fix-code`). Node >= 22.13 is required.
 - One systemd template unit, `fix-code-bridge@<variant>.service`, runs a variant (for example `slack-fix-code-personal-cloud-bridge` or `slack-fix-code-company-bridge`).
-- Before each start, `bin/fetch-secrets.sh` (run as root by `ExecStartPre=+`) pulls secrets with the machine identity into `/run/<variant>/` (tmpfs). It writes `secrets.env` (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, optional `ANTHROPIC_API_KEY`) and an optional `gh-token`, atomically, mode 0600, owned by `fixcode`. systemd loads `secrets.env` as an `EnvironmentFile`, and the bridge's own `.env`-beside-config loading is not needed (variables already in the environment win).
+- Before each start, `bin/fetch-secrets.sh` (run as root by `ExecStartPre=+`) pulls secrets with the machine identity into `/run/fix-code-secrets/<variant>/` (tmpfs, root-owned). It writes `secrets.env` (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, optional `ANTHROPIC_API_KEY`; root:root 0600) and an optional `gh-token` (root:`fixcode` 0640), atomically. systemd loads `secrets.env` as an `EnvironmentFile`, and the bridge's own `.env`-beside-config loading is not needed (variables already in the environment win).
 
 ## Layout on the VM
 
@@ -16,7 +16,7 @@ The model is cloud-generic: any Linux VM, a machine identity, a secret store and
 | `/etc/<variant>/bridge.env` | non-secret environment (`CLAUDE_CODE_USE_FOUNDRY=1`, ...) |
 | `/etc/<variant>/deploy.env` | secret store settings (`FIX_CODE_SECRET_PROVIDER`, `AZURE_KEY_VAULT`, `AWS_SECRET_PREFIX`, `GCP_PROJECT`, `REQUIRED_SECRETS`, `GITHUB_TOKEN_SOURCE`); sourced by root, so it must be root-owned and not group/world-writable |
 | `/var/lib/<variant>/.gitconfig` | git setup for `fixcode` (gh credential helper, identity placeholders) |
-| `/run/<variant>/` | fetched secrets (tmpfs, recreated on every start) |
+| `/run/fix-code-secrets/<variant>/` | fetched secrets (tmpfs, root-owned, recreated on every start; parent `root:root 0711`, this directory `root:fixcode 0750`) |
 | `/var/lib/<variant>` | state directory and `HOME` of `fixcode` |
 
 ## Mapping across platforms
@@ -66,7 +66,7 @@ Create the VM yourself and use `cloud-init/fix-code-bridge.yaml` as user data af
 
 - AWS: `FIX_CODE_SECRET_PROVIDER=aws`, `AWS_SECRET_PREFIX=fix-code/<variant>` in `deploy.env`; secrets are `<prefix>/<name>` plain-string secrets. Grant the instance role `secretsmanager:GetSecretValue` on them. Claude via Bedrock: set `CLAUDE_CODE_USE_BEDROCK=1` and `AWS_REGION` in `bridge.env` and allow those variables in the runtime `env` list in config.json.
 - GCP: `FIX_CODE_SECRET_PROVIDER=gcp`, `GCP_PROJECT=<project>`; grant the service account `roles/secretmanager.secretAccessor`. Vertex: `CLAUDE_CODE_USE_VERTEX=1`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`.
-- Other: `FIX_CODE_SECRET_PROVIDER=none`; create `/run/<variant>/secrets.env` (0600, owner `fixcode`) by your own means, or put `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` in a root-managed `bridge.env` (mode 0640, group `fixcode`).
+- Other: `FIX_CODE_SECRET_PROVIDER=none`; create `/run/fix-code-secrets/<variant>/secrets.env` (root:root 0600, in a root-owned directory) by your own means, or put `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` in a root-managed `bridge.env` (mode 0640, group `fixcode`).
 
 The CLI of the provider must be installed on the VM; the machine identity is used automatically (`az login --identity` is run by the script). Cloud-init installs only the Azure CLI. On AWS install AWS CLI v2 (`curl https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip -o awscliv2.zip && unzip awscliv2.zip && sudo ./aws/install`); on GCP the Google Cloud CLI (`sudo snap install google-cloud-cli --classic`, or Google's apt repository). Remove the Azure CLI line from cloud-init if unused.
 
@@ -79,7 +79,7 @@ Cloud-init writes `/var/lib/<variant>/.gitconfig` (owner `fixcode`, 0644) with t
 
 ## Per-variant notes
 
-- personal-cloud: store a GitHub PAT as `github-pat` and set `REQUIRED_SECRETS="github-pat"` in `deploy.env`; it is written to `/run/<variant>/gh-token`. Set `githubTokenFile` to that path (the example config already does), `stateDir` is the unit's `StateDirectory`, `/var/lib/slack-fix-code-personal-cloud-bridge`. See the variant README.
+- personal-cloud: store a GitHub PAT as `github-pat` and set `REQUIRED_SECRETS="github-pat"` in `deploy.env`; it is written to `/run/fix-code-secrets/slack-fix-code-personal-cloud-bridge/gh-token`. Set `githubTokenFile` to that path (the example config already does), `stateDir` is the unit's `StateDirectory`, `/var/lib/slack-fix-code-personal-cloud-bridge`. See the variant README.
 - company: uses a GitHub App (`githubAuth: "app"`). Keep the timer-owned token path `/run/fix-code-bridge/gh-token` (the directory belongs to the token timer, not to the unit), set `GITHUB_TOKEN_SOURCE=external` in `deploy.env` so `fetch-secrets.sh` never fetches or writes `gh-token`, and do NOT store `github-pat` for app-mode deployments. fetch-secrets does not mint App tokens: run the refresh timer from the company README ("GitHub App authentication") as root.
 
 ## Security notes
@@ -87,5 +87,6 @@ Cloud-init writes `/var/lib/<variant>/.gitconfig` (owner `fixcode`, 0644) with t
 - Secrets live only in `/run` (tmpfs) and the secret store; never put them in `config.json`, `deploy.env` or cloud-init.
 - No inbound ports; NSG/security groups should deny all inbound.
 - Grant the identity read-only access to the specific vault or secrets (Key Vault Secrets User, not Officer).
-- Secret files are 0600 owned by `fixcode`; `/run/<variant>` is 0750.
+- Secrets are root-owned and deliberately NOT in a `RuntimeDirectory` of the unit. systemd applies `EnvironmentFile` to the root `ExecStartPre=+` as well, and a directory owned by `fixcode` would let a compromised coding agent rewrite `secrets.env` with `LD_PRELOAD=`, `BASH_ENV=`, `PATH=` and so on, then restart the unit and get code execution as root. `secrets.env` is `root:root 0600` (PID 1 reads it; the bridge never opens it), `gh-token` is `root:fixcode 0640` (readable, not replaceable, because the directory is not writable by `fixcode`).
+- `fetch-secrets.sh` uses the absolute shebang `#!/bin/bash` and, as root, re-executes itself under `env -i` with a fixed `PATH`; the `FIX_CODE_DEPLOY_*` and `FIX_CODE_USER` test overrides are ignored as root. Consequently `FIX_CODE_SECRET_PROVIDER` from the caller's environment is not honoured as root: set it in `deploy.env` (root-owned) or pass `--provider`.
 - `fetch-secrets.sh` never prints secret values and never passes them on command lines. `--dry-run` prints the commands only.

@@ -48,8 +48,8 @@ test('user mode accepts a personal access token file, resolved beside the config
   const f = fixture(t);
   assert.equal(loadConfig(f.save()).githubAuth, 'user');
   assert.equal(loadConfig(f.save()).githubTokenFile, path.join(f.dir, 'gh-token'));
-  f.config.githubTokenFile = '/run/slack-fix-code-personal-cloud-bridge/gh-token';
-  assert.equal(loadConfig(f.save()).githubTokenFile, '/run/slack-fix-code-personal-cloud-bridge/gh-token');
+  f.config.githubTokenFile = '/run/fix-code-secrets/slack-fix-code-personal-cloud-bridge/gh-token';
+  assert.equal(loadConfig(f.save()).githubTokenFile, '/run/fix-code-secrets/slack-fix-code-personal-cloud-bridge/gh-token');
 });
 
 test('runtimes may not receive GitHub tokens from the environment', t => {
@@ -78,7 +78,7 @@ test('the example config loads once its three Slack ID placeholders are replaced
   const example = JSON.parse(fs.readFileSync(exampleFile, 'utf8'));
   assert.equal(example.githubAuth, undefined, 'user mode is the default; the example omits githubAuth');
   assert.equal(example.repositoryRouting.localRoot, undefined);
-  assert.equal(example.githubTokenFile, '/run/slack-fix-code-personal-cloud-bridge/gh-token');
+  assert.equal(example.githubTokenFile, '/run/fix-code-secrets/slack-fix-code-personal-cloud-bridge/gh-token');
   assert.throws(() => loadConfig(exampleFile), /Invalid Slack team ID/);
   const filled = { ...example, teamId: 'T123', allowedUsers: ['U123'], allowedChannels: ['C123'] };
   const file = path.join(f.dir, 'config.json');
