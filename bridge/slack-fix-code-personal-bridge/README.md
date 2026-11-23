@@ -1,5 +1,7 @@
 # Fix Code Slack Bridge
 
+This is the local personal variant of the Slack bridge, a thin package over [`../slack-bridge-core`](../slack-bridge-core/README.md). Three variants share that core: this one (your `gh` login on your Mac or workstation, with managed clones or validated local checkouts); the [personal cloud variant](../slack-fix-code-personal-cloud-bridge/README.md) (a personal token file on an unattended VM); and the [company variant](../slack-fix-code-company-bridge/README.md) (GitHub App tokens, Vertex AI or Microsoft Foundry). This variant's profile allows GitHub user mode only, with no token file, and local checkout reuse through `repositoryRouting.localRoot`.
+
 Send a task from Slack on your phone, let a local coding runner use `fix-code`, and receive a pull request in the same Slack thread (ready for review when verification is complete, otherwise a draft).
 
 This bridge uses Slack Socket Mode, a durable SQLite queue, and a local coding CLI: Claude Code, Codex, Gemini CLI, or opencode (see [Providers](#providers)). It creates an isolated branch/worktree before coding and orchestrates a read-only precheck that classifies each task as simple, medium, or advanced → implementation → independent review only where the mode requires it (advanced always adds architecture first) → controlled branch push → PR (ready for review only when verified, otherwise draft).
@@ -69,6 +71,7 @@ Replace every placeholder in the generated configuration:
 - `models`: precheck/architecture/implementation/review defaults for the selected runtime. `precheck` is optional and defaults to the implementer model; every value must be in `allowedModels`.
 - `allowedModels`: explicit override allowlists, validated against the models you can actually run.
 - `statusIntervalMs` (optional): how often a running task posts a status update in its thread. Default `300000` (5 minutes).
+- `githubAuth` and `githubTokenFile` are rejected by this variant (`githubAuth is not supported by the personal-local bridge.`, or the equivalent for `githubTokenFile`). GitHub access is your `gh` login. Earlier versions silently ignored these keys; remove them from `config.json`.
 
 The generated example uses channel routing and does not need a `repositories` alias map. The default clone root is `<stateDir>/repositories`. A channel name such as `billing-service` selects only a repository whose GitHub repository name matches `billing-service`, ignoring case. The bridge gets the channel's authoritative name and ID from Slack `conversations.info` and searches all accessible GitHub repositories using paginated `gh` results, including repositories owned by you, shared with you, or visible through an organization. It requires push permission before starting work.
 
@@ -275,4 +278,6 @@ python3 ../../skills/fix-code/scripts/test_git_guard.py
 
 Tests use fake Slack transports/model executables and disposable Git repositories. GitHub publication is replaced with a local fixture. No live Slack messages, model inference, or real PRs are needed for these checks. The Git integration fixture verifies the explicit push refspec and PR reuse, not a network push.
 
-See [architecture and limitations](docs/architecture.md) for component boundaries and deployment considerations.
+Shared tests for the core live in `../slack-bridge-core`: `cd ../slack-bridge-core && npm test`. The commands above cover this variant's profile, configuration and wiring.
+
+See [architecture and limitations](../slack-bridge-core/docs/architecture.md) for component boundaries and deployment considerations.

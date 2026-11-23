@@ -3,7 +3,9 @@
 This repository is the source of truth for personal skills and related tools.
 
 - `skills/<skill-name>/` contains portable agent skills.
-- `bridge/slack-fix-code-personal-bridge/` — the fix-code Slack bridge for personal use (uses your authenticated `gh` account).
+- `bridge/slack-bridge-core/` — the shared fix-code Slack bridge code (protocol, queue, runner, Git, routing, config, CLI) and cloud deployment scripts in `deploy/`; see [`deploy/README.md`](bridge/slack-bridge-core/deploy/README.md) for the cloud setup.
+- `bridge/slack-fix-code-personal-bridge/` — the personal variant: runs locally with your authenticated `gh` account.
+- `bridge/slack-fix-code-personal-cloud-bridge/` — the personal variant on an unattended cloud VM, with a personal GitHub token file.
 - `bridge/slack-fix-code-company-bridge/` — the company variant: GitHub App installation tokens via a token file, and Claude via Vertex AI or Microsoft Foundry.
 - `scripts/install-skills.py` installs the skills to Codex and, when present, Claude Code, and copies the helper scripts below into `$WORKSPACE`.
 - `scripts/clean-worktrees.sh` removes fix-code worktrees under `$WORKSPACE/worktrees` (default `~/workspace/worktrees`), showing each worktree's branch, status, and added/last-changed dates. Run it with `--help` for options.

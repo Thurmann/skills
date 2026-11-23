@@ -1,6 +1,6 @@
 # Fix Code Slack Bridge (personal cloud)
 
-This is the personal copy of the Slack bridge for an unattended cloud VM. It acts as **your** GitHub identity and uses **your** model credentials, so pull requests come from your account and runs continue while your laptop is off. The [local personal bridge](../slack-fix-code-personal-bridge/README.md) and the [company bridge](../slack-fix-code-company-bridge/README.md) are separate projects with their own config homes, state and Slack apps.
+This is the personal copy of the Slack bridge for an unattended cloud VM. It acts as **your** GitHub identity and uses **your** model credentials, so pull requests come from your account and runs continue while your laptop is off. It is a thin variant of [`../slack-bridge-core`](../slack-bridge-core/README.md), whose profile allows only GitHub user mode with a token file and managed clones. The [local personal bridge](../slack-fix-code-personal-bridge/README.md) and the [company bridge](../slack-fix-code-company-bridge/README.md) are separate variants with their own config homes, state and Slack apps.
 
 | Bridge | GitHub identity | Model credentials | Where it runs |
 | --- | --- | --- | --- |
@@ -108,7 +108,7 @@ These behave the same as in the local personal bridge. See its sections for the 
 
 ## Architecture and tests
 
-The architecture notes are in [`../slack-fix-code-company-bridge/docs/architecture.md`](../slack-fix-code-company-bridge/docs/architecture.md), which applies to all copies. Run the checks with:
+The architecture notes are in [`../slack-bridge-core/docs/architecture.md`](../slack-bridge-core/docs/architecture.md), which applies to all variants. Shared tests live in `../slack-bridge-core` (`cd ../slack-bridge-core && npm test`). Run the checks with:
 
 ```bash
 npm run check
