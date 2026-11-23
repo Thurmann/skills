@@ -19,6 +19,9 @@ const sh = (script, args, env = {}) => {
   return r;
 };
 const foundryId = '/subscriptions/abc-1/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/f1';
+// fetch-secrets.sh deliberately ignores the FIX_CODE_DEPLOY_* / FIX_CODE_USER overrides as root, so the tests that
+// redirect it into temp dirs need an unprivileged user (as in CI). Root behavior is covered by static checks above.
+const unprivileged = { skip: process.getuid?.() === 0 ? 'fetch-secrets.sh ignores its test overrides as root by design; run as a non-root user' : false };
 const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]);
 
 test('every deploy shell script passes bash -n', () => {
@@ -39,7 +42,7 @@ test('provision.sh rejects invalid variants', () => {
   assert.notEqual(sh('azure/provision.sh', ['--dry-run']).status, 0);
 });
 
-test('fetch-secrets.sh dry-runs and validates input', () => {
+test('fetch-secrets.sh dry-runs and validates input', unprivileged, () => {
   const none = sh('bin/fetch-secrets.sh', [variant, '--provider', 'none', '--dry-run']);
   assert.equal(none.status, 0, none.stderr);
   assert.notEqual(sh('bin/fetch-secrets.sh', ['../etc', '--dry-run']).status, 0);
@@ -126,7 +129,7 @@ exit 1
 }
 const mode = f => fs.statSync(f).mode & 0o777;
 
-test('azure path writes secrets.env (0600) and gh-token (0640)', t => {
+test('azure path writes secrets.env (0600) and gh-token (0640)', unprivileged, t => {
   const fx = fixture(t);
   const r = fx.go();
   assert.equal(r.status, 0, r.stderr);
@@ -139,7 +142,7 @@ test('azure path writes secrets.env (0600) and gh-token (0640)', t => {
   assert.ok(fs.readFileSync(fx.log, 'utf8').includes('ARGS=keyvault secret show --vault-name kv-test'));
 });
 
-test('FIX_CODE_SECRET_PROVIDER in deploy.env selects aws; --provider overrides it', t => {
+test('FIX_CODE_SECRET_PROVIDER in deploy.env selects aws; --provider overrides it', unprivileged, t => {
   const fx = fixture(t, { deployEnv: 'FIX_CODE_SECRET_PROVIDER=aws\n' });
   assert.equal(fx.go().status, 0);
   let log = fs.readFileSync(fx.log, 'utf8');
@@ -150,7 +153,7 @@ test('FIX_CODE_SECRET_PROVIDER in deploy.env selects aws; --provider overrides i
   assert.ok(/^gcloud /m.test(log) && !/^aws /m.test(log));
 });
 
-test('a required secret that is not found fails and leaves files untouched', t => {
+test('a required secret that is not found fails and leaves files untouched', unprivileged, t => {
   const fx = fixture(t, { deployEnv: 'REQUIRED_SECRETS="github-pat"\n', fakes: { values: { 'github-pat': null } } });
   fs.mkdirSync(fx.runDir, { recursive: true });
   fs.writeFileSync(path.join(fx.runDir, 'secrets.env'), 'OLD=1\n'); fs.writeFileSync(path.join(fx.runDir, 'gh-token'), 'oldtoken\n');
@@ -161,7 +164,7 @@ test('a required secret that is not found fails and leaves files untouched', t =
   assert.equal(fs.readFileSync(path.join(fx.runDir, 'gh-token'), 'utf8'), 'oldtoken\n');
 });
 
-test('an optional secret confirmed absent removes the stale gh-token and the API key line', t => {
+test('an optional secret confirmed absent removes the stale gh-token and the API key line', unprivileged, t => {
   for (const provider of ['azure', 'aws', 'gcp']) {
     const fx = fixture(t, { deployEnv: `FIX_CODE_SECRET_PROVIDER=${provider}\n`, fakes: { values: { 'github-pat': null, 'anthropic-api-key': null } } });
     fs.mkdirSync(fx.runDir, { recursive: true });
@@ -173,7 +176,7 @@ test('an optional secret confirmed absent removes the stale gh-token and the API
   }
 });
 
-test('a non-not-found error on an optional secret fails', t => {
+test('a non-not-found error on an optional secret fails', unprivileged, t => {
   const fx = fixture(t, { fakes: { errors: { 'github-pat': 'ERROR: (AuthorizationFailed) no access' } } });
   fs.mkdirSync(fx.runDir, { recursive: true });
   fs.writeFileSync(path.join(fx.runDir, 'gh-token'), 'keep\n');
@@ -184,7 +187,7 @@ test('a non-not-found error on an optional secret fails', t => {
   assert.ok(!fs.existsSync(path.join(fx.runDir, 'secrets.env')));
 });
 
-test('CLIs run with a scrubbed HOME, not the planted service-user HOME', t => {
+test('CLIs run with a scrubbed HOME, not the planted service-user HOME', unprivileged, t => {
   const fx = fixture(t, { deployEnv: 'FIX_CODE_SECRET_PROVIDER=aws\n' });
   const r = sh('bin/fetch-secrets.sh', [variant], { ...fx.env, AWS_CONFIG_FILE: path.join(fx.home, '.aws', 'config') });
   assert.equal(r.status, 0, r.stderr);
@@ -195,7 +198,7 @@ test('CLIs run with a scrubbed HOME, not the planted service-user HOME', t => {
   assert.ok(!fs.existsSync(path.join(fx.base, 'PWNED')));
 });
 
-test('GITHUB_TOKEN_SOURCE=external never writes gh-token', t => {
+test('GITHUB_TOKEN_SOURCE=external never writes gh-token', unprivileged, t => {
   const fx = fixture(t, { deployEnv: 'GITHUB_TOKEN_SOURCE=external\n' });
   const r = fx.go();
   assert.equal(r.status, 0, r.stderr);
@@ -223,14 +226,14 @@ test('cloud-init keeps the default user, installs the Azure CLI and writes .gitc
   assert.ok(y.includes('/var/lib/VARIANT/.gitconfig') && y.includes('helper = !/usr/bin/gh auth git-credential'));
 });
 
-test('az stderr with only "was not found" (no SecretNotFound) is an error for an optional secret', t => {
+test('az stderr with only "was not found" (no SecretNotFound) is an error for an optional secret', unprivileged, t => {
   const fx = fixture(t, { fakes: { errors: { 'github-pat': 'ERROR: The Vault was not found' } } });
   const r = fx.go();
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /Failed to fetch secret github-pat/);
 });
 
-test('REQUIRED_SECRETS is split without glob expansion', t => {
+test('REQUIRED_SECRETS is split without glob expansion', unprivileged, t => {
   const fx = fixture(t, { deployEnv: 'REQUIRED_SECRETS="*"\n' });
   const r = sh('bin/fetch-secrets.sh', [variant], { ...fx.env });
   assert.equal(r.status, 2);
