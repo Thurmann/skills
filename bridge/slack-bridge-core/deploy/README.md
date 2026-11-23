@@ -16,7 +16,7 @@ The model is cloud-generic: any Linux VM, a machine identity, a secret store and
 | `/etc/<variant>/bridge.env` | non-secret environment (`CLAUDE_CODE_USE_FOUNDRY=1`, ...) |
 | `/etc/<variant>/deploy.env` | secret store settings (`FIX_CODE_SECRET_PROVIDER`, `AZURE_KEY_VAULT`, `AWS_SECRET_PREFIX`, `GCP_PROJECT`, `REQUIRED_SECRETS`, `GITHUB_TOKEN_SOURCE`); sourced by root, so it must be root-owned and not group/world-writable |
 | `/var/lib/<variant>/.gitconfig` | git setup for `fixcode` (gh credential helper, identity placeholders) |
-| `/run/fix-code-secrets/<variant>/` | fetched secrets (tmpfs, root-owned, recreated on every start; parent `root:root 0711`, this directory `root:fixcode 0750`) |
+| `/run/fix-code-secrets/<variant>/` | fetched secrets (tmpfs, root-owned; files replaced on every start, the directory persists until reboot; parent `root:root 0711`, this directory `root:fixcode 0750`) |
 | `/var/lib/<variant>` | state directory and `HOME` of `fixcode` |
 
 ## Mapping across platforms
@@ -29,7 +29,7 @@ The model is cloud-generic: any Linux VM, a machine identity, a secret store and
 | Claude via | Microsoft Foundry | Bedrock | Vertex AI | `ANTHROPIC_API_KEY` |
 | fetch-secrets provider | `azure` | `aws` | `gcp` | `none` |
 
-Secret names are the same everywhere: `slack-bot-token`, `slack-app-token`, optional `github-pat`, optional `anthropic-api-key`. The provider is resolved as: `--provider` flag, then `FIX_CODE_SECRET_PROVIDER` (from the environment or from `deploy.env`, which is sourced first), then `azure`. `none` still reads `deploy.env` and then does nothing.
+Secret names are the same everywhere: `slack-bot-token`, `slack-app-token`, optional `github-pat`, optional `anthropic-api-key`. The provider is resolved as: `--provider` flag, then `FIX_CODE_SECRET_PROVIDER` from `deploy.env`, then `azure`. (As root the script restarts itself under `env -i`, so a `FIX_CODE_SECRET_PROVIDER` in the caller's environment is ignored.) `none` still reads `deploy.env` and then does nothing.
 
 `slack-bot-token` and `slack-app-token` are always required. Add more with `REQUIRED_SECRETS="github-pat"` in `deploy.env` (space-separated). An optional secret is treated as absent only when the CLI confirms not-found (az `SecretNotFound`, aws `ResourceNotFoundException`, gcloud `NOT_FOUND`); any other error (for example `AuthorizationFailed`) fails the start for every secret. A confirmed-absent `github-pat` removes a stale `gh-token`; a missing `anthropic-api-key` is simply left out of `secrets.env`. Files are replaced only after every fetch succeeded.
 
