@@ -67,7 +67,7 @@ The CLI of the provider (`az`, `aws`, `gcloud`) must be installed on the VM and 
 
 ## Per-variant notes
 
-- personal-cloud: store a GitHub PAT as `github-pat`; it is written to `/run/<variant>/gh-token`. Set `githubTokenFile` to `/run/<variant>/gh-token` (the example config uses `/run/fix-code-personal-cloud-bridge/gh-token`, which matches this layout).
+- personal-cloud: store a GitHub PAT as `github-pat`; it is written to `/run/<variant>/gh-token`. Set `githubTokenFile` to `/run/<variant>/gh-token`; the personal-cloud example config already uses `/run/slack-fix-code-personal-cloud-bridge/gh-token`, and its `stateDir` is the unit's `StateDirectory`, `/var/lib/slack-fix-code-personal-cloud-bridge`.
 - company: uses a GitHub App (`githubAuth: "app"`). fetch-secrets does not mint App tokens. Run the token refresh timer described in the company README ("GitHub App authentication") separately, as root, writing the token file (mode 0640, group `fixcode`) to the path in `githubTokenFile`. Note `/run/fix-code-bridge/gh-token` in that README is an example; with this unit use a directory that is not recreated by the unit (the unit's `/run/<variant>` is owned by `fixcode` and shared with fetched secrets, so `/run/<variant>/gh-token` also works if the timer writes it after start). Claude via Vertex or Foundry: see the company README.
 
 ## Security notes

@@ -12,14 +12,14 @@
     "gemini",
     "opencode"
   ],
-  "stateDir": "/var/lib/fix-code-personal-cloud-bridge",
+  "stateDir": "/var/lib/slack-fix-code-personal-cloud-bridge",
   "pythonPath": "python3",
   "ghPath": "gh",
-  "githubTokenFile": "/run/fix-code-personal-cloud-bridge/gh-token",
+  "githubTokenFile": "/run/slack-fix-code-personal-cloud-bridge/gh-token",
   "allowNetwork": true,
   "repositoryRouting": {
     "mode": "channel",
-    "cloneRoot": "/var/lib/fix-code-personal-cloud-bridge/repositories",
+    "cloneRoot": "/var/lib/slack-fix-code-personal-cloud-bridge/repositories",
     "allowedOwners": [
       "your-github-user"
     ],
