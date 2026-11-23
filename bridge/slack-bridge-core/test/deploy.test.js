@@ -61,7 +61,7 @@ test('fetch-secrets.sh dry-runs and validates input', () => {
 
 test('systemd unit matches the variant layout', () => {
   const unit = fs.readFileSync(path.join(deploy, 'systemd', 'fix-code-bridge@.service'), 'utf8');
-  for (const s of ['ExecStart=/usr/bin/node src/cli.js start --config /etc/%i/config.json', 'WorkingDirectory=/opt/fix-code/bridge/%i', 'ExecStartPre=+/opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i', 'EnvironmentFile=-/run/fix-code-secrets/%i/secrets.env', 'StateDirectory=%i', 'NoNewPrivileges=true']) assert.ok(unit.includes(s), s);
+  for (const s of ['ExecStart=/usr/bin/node src/cli.js start --config /etc/%i/config.json', 'WorkingDirectory=/opt/fix-code/bridge/%i', 'ExecStartPre=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/bash /opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i', 'EnvironmentFile=-/run/fix-code-secrets/%i/secrets.env', 'StateDirectory=%i', 'NoNewPrivileges=true']) assert.ok(unit.includes(s), s);
   assert.ok(fs.existsSync(path.join(deploy, 'bin', 'fetch-secrets.sh')));
   const envFiles = unit.split('\n').filter(l => l.startsWith('EnvironmentFile='));
   assert.ok(envFiles.some(l => l.includes('/run/fix-code-secrets/%i/')));
@@ -73,7 +73,8 @@ test('fetch-secrets.sh uses an absolute shebang and re-executes under a clean en
   const src = fs.readFileSync(path.join(deploy, 'bin', 'fetch-secrets.sh'), 'utf8');
   assert.ok(src.startsWith('#!/bin/bash\n'));
   assert.ok(src.includes('exec /usr/bin/env -i FIX_CODE_CLEAN_ENV=1'));
-  assert.ok(src.includes('"$(id -u)" = 0'));
+  assert.ok(!/\$\(id -u\)/.test(src), 'id must be called by absolute path before the environment is trusted');
+  assert.ok(src.includes('"$(/usr/bin/id -u)" = 0'));
   assert.ok(fs.readFileSync(path.join(deploy, 'azure', 'provision.sh'), 'utf8').startsWith('#!/bin/bash\n'));
 });
 
