@@ -1,0 +1,13 @@
+{
+  "name": "slack-bridge-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared code for the fix-code Slack bridges (protocol, runner, store, providers, Git, routing, config and CLI)",
+  "engines": { "node": ">=22.13.0" },
+  "exports": { "./*": "./src/*" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "for f in src/*.js src/providers/*.js; do node --check $f || exit 1; done"
+  }
+}
