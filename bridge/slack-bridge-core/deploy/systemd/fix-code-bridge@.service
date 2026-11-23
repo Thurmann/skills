@@ -19,7 +19,9 @@ EnvironmentFile=-/etc/%i/bridge.env
 # EnvironmentFile to the root ExecStartPre too, so fixcode must never be able to rewrite it.
 EnvironmentFile=-/run/fix-code-secrets/%i/secrets.env
 # Runs as root ("+") so it can fetch secrets with the machine identity and hand them to fixcode.
-ExecStartPre=+/opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i
+# "env -i" gives it an empty environment, so nothing from HOME or the EnvironmentFiles above
+# (BASH_ENV, LD_PRELOAD, PATH, ...) reaches the root process.
+ExecStartPre=+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/bash /opt/fix-code/bridge/slack-bridge-core/deploy/bin/fetch-secrets.sh %i
 ExecStart=/usr/bin/node src/cli.js start --config /etc/%i/config.json
 Restart=on-failure
 RestartSec=10

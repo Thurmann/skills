@@ -20,8 +20,9 @@
 # run and leaves the existing files untouched.
 set -euo pipefail
 
-# Defense in depth: as root, drop whatever environment the unit passed (BASH_ENV, PATH, ...).
-if [ "$(id -u)" = 0 ] && [ -z "${FIX_CODE_CLEAN_ENV:-}" ]; then
+# Defense in depth: as root, drop whatever environment the caller passed (PATH, ...). The unit
+# already starts this script under "env -i", because bash reads BASH_ENV before this line runs.
+if [ "$(/usr/bin/id -u)" = 0 ] && [ -z "${FIX_CODE_CLEAN_ENV:-}" ]; then
   exec /usr/bin/env -i FIX_CODE_CLEAN_ENV=1 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash "$0" "$@"
 fi
 
@@ -43,7 +44,7 @@ done
 [[ "$variant" =~ ^[a-z0-9-]+$ ]] || { echo "Invalid variant name: $variant" >&2; exit 2; }
 
 is_root=0
-[ "$(id -u)" -ne 0 ] || is_root=1
+[ "$(/usr/bin/id -u)" -ne 0 ] || is_root=1
 if [ "$is_root" -eq 1 ]; then
   # Test overrides are for unprivileged runs only; as root they are never honoured.
   unset FIX_CODE_DEPLOY_ETC FIX_CODE_DEPLOY_RUN FIX_CODE_DEPLOY_CLI_PATH FIX_CODE_DEPLOY_CLI_HOME FIX_CODE_USER
