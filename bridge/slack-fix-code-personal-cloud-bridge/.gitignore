@@ -6,3 +6,5 @@ config.json
 state/
 *.sqlite*
 .DS_Store
+
+scripts/azure.env
