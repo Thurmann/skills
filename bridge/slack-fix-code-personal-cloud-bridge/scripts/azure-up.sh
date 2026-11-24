@@ -123,7 +123,7 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fix-code-azure-up.XXXXXX")"
 # --- configuration --------------------------------------------------------------------------
 
 # Parses KEY=value lines without evaluating them. Variables already set in the environment win.
-# With secrets_ok, only the secret keys are read (for the Slack .env); otherwise secrets are rejected.
+# Mode "slack" reads only the Slack token keys (the local .env); mode "config" rejects secrets.
 parse_env_file() {
   local file="$1" mode="$2" line key value rest lineno=0
   while IFS= read -r line || [[ -n "$line" ]]; do
