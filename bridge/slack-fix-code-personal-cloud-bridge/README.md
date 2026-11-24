@@ -93,6 +93,29 @@ For Codex, put `OPENAI_API_KEY` in the service environment. The example also lis
 
 ## Deploy to the cloud
 
+### One command on Azure: `scripts/azure-up.sh`
+
+`scripts/azure-up.sh` does the whole Azure setup below in one run, reusing your local personal bridge's Slack setup:
+
+- From `~/.config/fix-code-bridge/config.json` (`--bridge-config`): `teamId`, `allowedUsers`, `allowedChannels`, `operators`, `timeoutMs`, `maxRepairRounds`, `statusIntervalMs` and `repositoryRouting.allowedOwners`/`channelOwners`. Everything else comes from `config.example.json`, and the result is checked with the bridge's own config loader.
+- From `~/.config/fix-code-bridge/.env` (`--slack-env`): `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`.
+- Your GitHub login, name and noreply email (from `gh api user`) for `allowedOwners`, when empty, and the VM's commit identity.
+
+It creates a tagged resource group, an RBAC Key Vault (you get Key Vault Secrets Officer on it), and the outbound-only VM from the shared cloud-init. It stores `slack-bot-token`, `slack-app-token`, `github-pat` and, if exported, `anthropic-api-key`; values are piped to `az`, never put on argv. It grants the VM Key Vault Secrets User, and Cognitive Services User when you set `FOUNDRY_RESOURCE_ID`. Then it waits for cloud-init, writes `/etc/slack-fix-code-personal-cloud-bridge/{config.json,deploy.env,bridge.env}` and the git identity with `az vm run-command`, installs the Claude CLI, and starts the service.
+
+```bash
+cp scripts/azure.env.example scripts/azure.env   # optional; every key has a default
+scripts/azure-up.sh --print-config   # the config.json the VM gets; no Azure calls
+scripts/azure-up.sh --dry-run        # read-only checks and the plan with costs
+GITHUB_PAT=... scripts/azure-up.sh   # or let it ask for the token (hidden input)
+```
+
+Before it changes anything it prints the plan and the cost (about $40 per month for a `Standard_B2s` VM, disk and public IP), then asks for `y` and the resource group name. It is safe to rerun: existing resources are reused, and the VM config, secrets and service are updated in place (`--skip-secrets` keeps the stored secrets). Remove everything with `az group delete --name rg-fix-code-cloud`.
+
+The tokens in that `.env` belong to the Slack app of your local bridge. Socket Mode spreads events over every connection of an app, so do not run the local and cloud bridges at the same time with the same app. To run both, create a separate app from `slack-app-manifest.json` and pass a `.env` with its tokens via `--slack-env`.
+
+### Manual setup on any cloud
+
 See [`../slack-bridge-core/deploy/README.md`](../slack-bridge-core/deploy/README.md) (section 1 above has the layout) for the VM setup: a generic Linux VM run by systemd, with Azure as the default worked example. It covers the bridge user, the token file refresh, the `EnvironmentFile`, the state directory and the unit file.
 
 ## 4. Run diagnostics, then connect

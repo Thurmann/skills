@@ -9,7 +9,7 @@
     "start": "node src/cli.js start",
     "doctor": "node src/cli.js doctor",
     "test": "node --test test/*.test.js",
-    "check": "for f in src/*.js; do node --check $f || exit 1; done && node -e \"import('slack-bridge-core/cli.js')\""
+    "check": "for f in src/*.js; do node --check $f || exit 1; done && bash -n scripts/azure-up.sh && node -e \"import('slack-bridge-core/cli.js')\""
   },
   "dependencies": {
     "slack-bridge-core": "file:../slack-bridge-core",
