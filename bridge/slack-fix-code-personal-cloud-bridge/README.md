@@ -50,7 +50,7 @@ Start from `config.example.json` (created by `init`; on the VM copy it to `/etc/
 - **`repositoryRouting`** uses `mode: "channel"` and managed clones under `cloneRoot`. There is no `localRoot`, because the VM does not keep your working checkouts. Set `allowedOwners` to your GitHub user (and any organizations you want to allow) so the channel resolver cannot pick a same-named repository elsewhere.
 - **`runtimes.<name>.env`** lists the only extra variables forwarded to each CLI. Names such as `GH_TOKEN`, `GITHUB_TOKEN` and `SLACK_*` are rejected.
 
-Other keys (`timeoutMs`, `maxRepairRounds`, `allowNetwork`, `models`, `allowedModels`, `operators`, `statusIntervalMs`) work as described in the [local personal bridge README](../slack-fix-code-personal-bridge/README.md#3-fill-configjson).
+Other keys (`timeoutMs`, `maxRepairRounds`, `allowNetwork`, `models`, `allowedModels`, `operators`, `statusIntervalMs`) work as described in the [local personal bridge README](../slack-fix-code-personal-bridge/README.md#3-fill-configjson); defaults are listed in [Optional settings](../slack-bridge-core/docs/usage.md#optional-settings).
 
 ## GitHub token file
 
@@ -129,11 +129,11 @@ npm start
 
 ## Slack commands, execution and recovery
 
-These behave the same as in the local personal bridge. See its sections for the details:
+These behave the same as in the local personal bridge and are documented once in [Using the bridge in Slack](../slack-bridge-core/docs/usage.md):
 
-- [Slack commands](../slack-fix-code-personal-bridge/README.md#slack-commands)
-- [Execution and Git behavior](../slack-fix-code-personal-bridge/README.md#execution-and-git-behavior)
-- [Recovery and reply delivery](../slack-fix-code-personal-bridge/README.md#recovery-and-reply-delivery)
+- [Slack commands](../slack-bridge-core/docs/usage.md#slack-commands)
+- [Execution and Git behavior](../slack-bridge-core/docs/usage.md#execution-and-git-behavior)
+- [Recovery and reply delivery](../slack-bridge-core/docs/usage.md#recovery-and-reply-delivery)
 
 ## Architecture and tests
 

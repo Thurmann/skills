@@ -10,6 +10,7 @@ Nothing runs from this directory on its own. Three variants consume it: [persona
 - `test/`: core tests.
 - `deploy/`: systemd template, cloud-init, Azure provisioning and secret fetching. See [`deploy/README.md`](deploy/README.md).
 - `docs/architecture.md`: component boundaries, the core/variant split and the profile table.
+- `docs/usage.md`: providers, Slack commands, execution and recovery, and optional settings shared by all variants.
 
 ## How a variant consumes it
 
