@@ -6,8 +6,6 @@ import { StringDecoder } from 'node:string_decoder';
 import { RunnerError, errorDetail } from './errors.js';
 import { getProvider, providerNames } from './providers/index.js';
 
-export { RunnerError };
-
 const PHASES = new Set(['precheck', 'architect', 'implementer', 'reviewer']);
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_FINAL_TEXT_CHARS = 64 * 1024;
@@ -304,8 +302,8 @@ function runChild(options) {
         if (failure || settled) return;
         child.stdin.end(prompt);
       } catch (error) {
-        terminate(new RunnerError('PID_PERSISTENCE_FAILED', 'Unable to persist runner process state'));
-        if (child.pid == null) await settle(new RunnerError('PID_PERSISTENCE_FAILED', 'Unable to persist runner process state'));
+        terminate(new RunnerError('PID_PERSISTENCE_FAILED', 'Unable to persist runner process state', { cause: error }));
+        if (child.pid == null) await settle(new RunnerError('PID_PERSISTENCE_FAILED', 'Unable to persist runner process state', { cause: error }));
       }
     })();
     if (signal?.aborted) onAbort();

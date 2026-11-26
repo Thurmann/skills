@@ -1,7 +1,7 @@
 const READONLY_TOOLS = ['Read', 'Glob', 'Grep'];
 const WRITE_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'Agent'];
 
-export function buildClaudeArgs({ model, effort, readonly }) {
+function buildClaudeArgs({ model, effort, readonly }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model];
   if (effort) args.push('--effort', effort);
   // These are ordinary Claude Code permission controls, not permission bypass switches.

@@ -107,5 +107,3 @@ export function parseCommand(text, botUserId, options = {}) {
   if (!['status', 'cancel', 'retry', 'fix', 'help'].includes(command) || rest) return naturalRequest(commandText);
   return { command };
 }
-
-export default parseCommand;

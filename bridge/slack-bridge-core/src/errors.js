@@ -1,6 +1,6 @@
 export class RunnerError extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, options) {
+    super(message, options);
     this.name = 'RunnerError';
     this.code = code;
   }
