@@ -14,6 +14,7 @@
 # Worktrees are picked with fzf (all preselected) unless -a is given.
 # Without -k/-y you are also asked which cleanup mode to use.
 
+# No -e on purpose: failures are counted in FAILED and reported at the end.
 set -uo pipefail
 
 ROOT="${WORKSPACE:-$HOME/workspace}/worktrees"

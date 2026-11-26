@@ -45,3 +45,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: python skills/fix-code/scripts/test_git_guard.py
+
+  repo-checks:
+    name: Skills and shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The Codex validator is absent here, so the Ruby fallback runs.
+      - run: scripts/validate-skills.sh
+      - run: shellcheck --severity=warning $(git ls-files '*.sh')
