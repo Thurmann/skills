@@ -20,7 +20,7 @@ A variant directory contains:
 2. `.npmrc` with `install-links=false`, so npm links the directory rather than copying it.
 3. `src/profile.js`: the frozen profile (`id`, `configDirName`, `configEnvVar`, `packageDir`, `defaultSkillPath`, `github`, `routing`).
 4. `src/cli.js`: the Slack SDK entry point. It is the only place the SDK is imported.
-5. Tests and `src/cli.js` bind the profile with `createConfigApi(profile)` from `slack-bridge-core/config.js`; there is no per-variant config module.
+5. No per-variant config module: core's `runCli` binds the profile with `createConfigApi(profile)` from `slack-bridge-core/config.js`, and variant tests do the same.
 
 Example from the personal-cloud variant, `src/cli.js`:
 
