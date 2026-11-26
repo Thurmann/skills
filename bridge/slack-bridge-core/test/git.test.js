@@ -37,7 +37,20 @@ test('explicit base fetch ignores custom mappings that would advance a user bran
   fs.writeFileSync(path.join(source, 'base'), 'B\n'); git(source, 'commit', '-am', 'B'); git(source, 'push', 'origin', 'main');
   const branchB = git(source, 'rev-parse', 'main');
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'git'), `#!/usr/bin/env node\nimport {spawnSync} from 'node:child_process';\nconst args=process.argv.slice(2);if(args[0]==='remote'&&args.includes('get-url')&&args.includes('origin')){console.log('https://github.com/example/app.git');process.exit(0);}const r=spawnSync('/usr/bin/git',args,{stdio:'inherit'});process.exit(r.status??1);\n`, { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, 'git'), String.raw`#!/bin/sh
+if [ "$1" = remote ]; then
+  has_get_url=0; has_origin=0
+  for a in "$@"; do
+    if [ "$a" = get-url ]; then has_get_url=1; fi
+    if [ "$a" = origin ]; then has_origin=1; fi
+  done
+  if [ "$has_get_url" = 1 ] && [ "$has_origin" = 1 ]; then
+    echo 'https://github.com/example/app.git'
+    exit 0
+  fi
+fi
+exec /usr/bin/git "$@"
+`, { mode: 0o700 });
   const originalPath = process.env.PATH; process.env.PATH = bin + path.delimiter + originalPath;
   t.after(() => { process.env.PATH = originalPath; });
   const task = { id: 'fetch-map', repository: { path: checkout, github: 'example/app', remote: 'origin', base: 'origin/main', baseBranch: 'main' } };
@@ -77,17 +90,21 @@ else if(args[0]==='pr'&&args[1]==='comment') { const file=args[args.indexOf('--b
 else if(args[0]==='label'&&args[1]==='list') { if(fs.existsSync(${JSON.stringify(labelFail)})) process.exit(1); console.log(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); }
 else if(args[0]==='label'&&args[1]==='create') { const l=JSON.parse(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); l.push({name:args[2]}); fs.writeFileSync(${JSON.stringify(labelState)},JSON.stringify(l)); console.log('ok'); }
 else if(args[0]==='pr'&&args[1]==='edit') console.log('ok');
-else if(args[0]==='label'&&args[1]==='list') { if(fs.existsSync(${JSON.stringify(labelFail)})) process.exit(1); console.log(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); }
-else if(args[0]==='label'&&args[1]==='create') { const l=JSON.parse(fs.readFileSync(${JSON.stringify(labelState)},'utf8')); l.push({name:args[2]}); fs.writeFileSync(${JSON.stringify(labelState)},JSON.stringify(l)); console.log('ok'); }
-else if(args[0]==='pr'&&args[1]==='edit') console.log('ok');
 else process.exitCode=1;
 `, { mode: 0o700 });
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'git'), `#!/usr/bin/env node
-import fs from 'node:fs';import {spawnSync} from 'node:child_process';
-const args=process.argv.slice(2);
-if(args[0]==='push'){fs.appendFileSync(${JSON.stringify(gitLog)},JSON.stringify(args)+'\\n');process.exit(0);}
-const result=spawnSync('/usr/bin/git',args,{stdio:'inherit'});process.exit(result.status??1);
+  fs.writeFileSync(path.join(bin, 'git'), String.raw`#!/bin/sh
+if [ "$1" = push ]; then
+  json='['; sep=''
+  for a in "$@"; do
+    e=$(printf '%s' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    json="$json$sep\"$e\""
+    sep=','
+  done
+  printf '%s\n' "$json]" >> '${gitLog}'
+  exit 0
+fi
+exec /usr/bin/git "$@"
 `, { mode: 0o700 });
   const originalPath = process.env.PATH;
   process.env.PATH = bin + path.delimiter + originalPath;
