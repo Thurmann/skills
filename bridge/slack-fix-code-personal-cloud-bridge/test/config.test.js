@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, findConfig, configHome } from '../src/config.js';
+import { createConfigApi } from 'slack-bridge-core/config.js';
 import profile from '../src/profile.js';
+
+const { configHome, findConfig, loadConfig } = createConfigApi(profile);
 
 const exampleFile = path.resolve(import.meta.dirname, '../config.example.json');
 
