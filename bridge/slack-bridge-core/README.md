@@ -10,6 +10,7 @@ Nothing runs from this directory on its own. Three variants consume it: [persona
 - `test/`: core tests.
 - `deploy/`: systemd template, cloud-init, Azure provisioning and secret fetching. See [`deploy/README.md`](deploy/README.md).
 - `docs/architecture.md`: component boundaries, the core/variant split and the profile table.
+- `docs/usage.md`: providers, Slack commands, execution and recovery, and optional settings shared by all variants.
 
 ## How a variant consumes it
 
@@ -19,7 +20,7 @@ A variant directory contains:
 2. `.npmrc` with `install-links=false`, so npm links the directory rather than copying it.
 3. `src/profile.js`: the frozen profile (`id`, `configDirName`, `configEnvVar`, `packageDir`, `defaultSkillPath`, `github`, `routing`).
 4. `src/cli.js`: the Slack SDK entry point. It is the only place the SDK is imported.
-5. `src/config.js`: a shim that binds the profile to core's config API.
+5. No per-variant config module: core's `runCli` binds the profile with `createConfigApi(profile)` from `slack-bridge-core/config.js`, and variant tests do the same.
 
 Example from the personal-cloud variant, `src/cli.js`:
 

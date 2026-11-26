@@ -13,3 +13,10 @@ test('errorDetail bounds its length and ignores non-strings', () => {
   assert.equal(errorDetail(undefined), '');
   assert.equal(redactSecrets('GITHUB_TOKEN: abc'), 'GITHUB_TOKEN: [redacted]');
 });
+
+test('redactSecrets covers every Slack token family and whole Bearer values', () => {
+  for (const token of ['xoxb-1-2', 'xoxp-1-2', 'xoxe-1-AbCdEf123', 'xoxc-123-456-abc', 'xoxd-AbC', 'xapp-1-A-2']) {
+    assert.equal(redactSecrets(`Slack said ${token}.`), 'Slack said [redacted].', token);
+  }
+  assert.equal(redactSecrets('Authorization: Bearer abc$def next'), 'Authorization: Bearer [redacted] next');
+});

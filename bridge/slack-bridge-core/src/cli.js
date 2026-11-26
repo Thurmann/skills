@@ -6,23 +6,30 @@ import { Store } from './store.js';
 import { createRunner } from './runner.js';
 import { getProvider, providerNames } from './providers/index.js';
 import { Bridge, processIdentity } from './bridge.js';
-import { command, validateRepository, configureGitHubAuth, checkGitHubTokenFile } from './git.js';
+import { command, validateRepository, configureGitHubAuth, readGitHubToken } from './git.js';
+import { errorDetail, redactSecrets } from './errors.js';
 
 function mkdirPrivate(folder) { fs.mkdirSync(folder, { recursive: true, mode: 0o700 }); fs.chmodSync(folder, 0o700); }
 // Slack SDK messages are useful for diagnosis; strip anything token-shaped before printing them.
-const redact = args => args.map(arg => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : JSON.stringify(arg)) ?? String(arg))
-  .join(' ').replace(/\bx(?:ox[a-z]|app)-[A-Za-z0-9-]+/g, '[redacted token]').replace(/(Bearer\s+)\S+/gi, '$1[redacted]');
+const redact = args => redactSecrets(args.map(arg => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : JSON.stringify(arg)) ?? String(arg)).join(' '));
+// Log a fixed message plus the redacted error detail, when there is any.
+const logFailure = (message, error) => { const detail = errorDetail(error?.message); console.error(`${message}${detail ? ` (${detail})` : ''}`); };
+// Startup failures whose message names a configuration or runner problem are actionable as written; anything else may leak internals, so it is replaced by a generic message.
+const isOperatorActionable = message => message?.includes('configured') || message?.includes('runner');
+// Doctor warns 5 minutes before the runtime's 60 minute enforcement (APP_TOKEN_MAX_AGE_MS in git.js) so a stalled refresh job is caught.
+const DOCTOR_APP_TOKEN_MAX_AGE_MS = 55 * 60000;
 const safeLogger = {
   debug() {}, info() {}, warn(...args) { console.warn(`Slack client warning: ${redact(args)}`); },
   error(...args) { console.error(`Slack client error: ${redact(args)} (check connection/app configuration)`); },
   getLevel() { return 'error'; }, setLevel() {}
 };
-const available = config => name => command(config.runtimes[name].path, ['--version']).then(() => true, () => false);
+const probe = executable => command(executable, ['--version']).then(() => true, () => false);
+const available = config => name => probe(config.runtimes[name].path);
 // An installed CLI without models/allowedModels is skipped by config loading; say so instead of staying silent.
 async function unconfiguredInstalled(config) {
   const found = [];
   for (const name of providerNames()) {
-    if (!config.runtimes[name] && await command(config[`${name}Path`], ['--version']).then(() => true, () => false)) found.push(name);
+    if (!config.runtimes[name] && await probe(config[`${name}Path`])) found.push(name);
   }
   return found;
 }
@@ -47,7 +54,7 @@ async function doctor(config, override) {
   else checks.push(usable.length ? { check: 'at least one provider usable', ok: true, usable } : { check: 'at least one provider usable', ok: false, reason: 'No configured provider CLI is usable on this host.' });
   try { checks.push({ check: `default runtime: ${await selectDefaultRuntime(config, { override, isAvailable: async name => usable.includes(name) })}`, ok: true }); }
   catch (error) { if (!override && usable.length) checks.push({ check: 'default runtime', ok: true, warning: `${error.message} start will fail unless you pass --runtime ${usable.join('|')} or change "runtime" in config.json.` }); }
-  if (config.githubTokenFile) await check('GitHub token file', () => checkGitHubTokenFile(config.githubTokenFile, { maxAgeMs: config.githubAuth === 'app' ? 55 * 60000 : undefined }));
+  if (config.githubTokenFile) await check('GitHub token file', () => readGitHubToken(config.githubTokenFile, { maxAgeMs: config.githubAuth === 'app' ? DOCTOR_APP_TOKEN_MAX_AGE_MS : undefined }));
   if (config.githubAuth === 'app') await check('GitHub App installation access', () => command(config.ghPath, ['api', '--hostname', 'github.com', '--method', 'GET', '/installation/repositories?per_page=1', '--jq', '.total_count']));
   else await check('GitHub CLI authentication', () => command(config.ghPath, ['auth', 'status']));
   for (const [alias, repo] of Object.entries(config.repositories)) await check(`repository ${alias}`, () => validateRepository(repo));
@@ -77,11 +84,11 @@ async function start(config, override, { SocketModeClient, WebClient }) {
     socket = new SocketModeClient({ appToken: process.env.SLACK_APP_TOKEN, logger: safeLogger });
     socket.on('app_mention', async ({ body, ack }) => {
       try { await bridge.receive(body); await ack(); }
-      catch { console.error('Intake persistence failed; event was not acknowledged so Slack can redeliver.'); }
+      catch (error) { logFailure('Intake persistence failed; event was not acknowledged so Slack can redeliver.', error); }
     });
-    socket.on('error', () => console.error('Slack Socket Mode connection error; inspect app setup/network.'));
+    socket.on('error', error => logFailure('Slack Socket Mode connection error; inspect app setup/network.', error));
     await socket.start();
-    timers = [setInterval(() => bridge.tick().catch(() => console.error('Worker error; task state is preserved.')), 750), setInterval(() => bridge.flushOutbox().catch(() => console.error('Reply persistence error; inspect local outbox.')), 1000)];
+    timers = [setInterval(() => bridge.tick().catch(error => logFailure('Worker error; task state is preserved.', error)), 750), setInterval(() => bridge.flushOutbox().catch(error => logFailure('Reply persistence error; inspect local outbox.', error)), 1000)];
     console.log('Fix Code Slack bridge connected. Only configured users/channels are accepted; repository routing follows local configuration.');
     let closing = false;
     const shutdown = async () => {
@@ -92,14 +99,15 @@ async function start(config, override, { SocketModeClient, WebClient }) {
       const deadline = Date.now() + 12000;
       while (bridge.working && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
       if (bridge.working) { console.error('Shutdown timed out; inspect preserved runner state before restarting.'); process.exitCode = 1; }
-      if (!bridge.working) { release(); store.close(); }
+      else { release(); store.close(); }
     };
     process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
   } catch (error) {
     timers.forEach(clearInterval);
     if (socket) await socket.disconnect().catch(() => {});
     release(); if (store) store.close();
-    throw new Error(error.message?.includes('configured') || error.message?.includes('runner') ? error.message : 'Bridge startup failed; check local authentication, app scopes, workspace IDs, and interrupted-run state.');
+    const detail = errorDetail(error.message);
+    throw new Error(isOperatorActionable(error.message) ? error.message : `Bridge startup failed${detail ? ` (${detail})` : ''}; check local authentication, app scopes, workspace IDs, and interrupted-run state.`);
   }
 }
 /** Run the CLI for a bridge profile; sdk supplies the Slack classes so this package never imports the Slack SDK. */
@@ -154,5 +162,5 @@ export async function main(profile, sdk, argv) {
   throw new Error('Unknown command. Run node src/cli.js help.');
 }
 export function runCli(profile, sdk, argv = process.argv.slice(2)) {
-  return main(profile, sdk, argv).catch(error => { console.error(error.message?.replace(/xox[baprs]-[A-Za-z0-9-]+|xapp-[A-Za-z0-9-]+/g, '[redacted]') || 'Command failed.'); process.exitCode = 1; });
+  return main(profile, sdk, argv).catch(error => { console.error((error.message && redactSecrets(error.message)) || 'Command failed.'); process.exitCode = 1; });
 }

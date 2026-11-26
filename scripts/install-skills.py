@@ -77,23 +77,14 @@ def main() -> int:
     home = Path.home()
     # Current Codex reads user skills from ~/.agents/skills; the older
     # $CODEX_HOME/skills (~/.codex/skills) location is no longer installed to.
-    codex_targets = [home / ".agents" / "skills"]
-
-    targets: list[tuple[str, Path]] = []
-    seen: set[Path] = set()
-    for target in codex_targets:
-        resolved = target.resolve()
-        if resolved not in seen:
-            targets.append(("Codex", target))
-            seen.add(resolved)
+    codex_target = home / ".agents" / "skills"
+    targets: list[tuple[str, Path]] = [("Codex", codex_target)]
 
     claude_home = home / ".claude"
     if shutil.which("claude") or claude_home.is_dir():
-        target = claude_home / "skills"
-        resolved = target.resolve()
-        if resolved not in seen:
-            targets.append(("Claude Code", target))
-            seen.add(resolved)
+        claude_target = claude_home / "skills"
+        if claude_target.resolve() != codex_target.resolve():
+            targets.append(("Claude Code", claude_target))
     else:
         print("Claude Code not detected; skipping its skill directory.")
 

@@ -437,7 +437,7 @@ print_summary() {
   log "================================================================================"
 }
 
-tags() { printf '%s %s' "$TAG_PROJECT" "$TAG_MANAGED"; }
+TAG_ARGS=("$TAG_PROJECT" "$TAG_MANAGED")  # one array element per key=value tag
 
 # Creates a role assignment unless the same one already exists.
 ensure_role() {
@@ -470,10 +470,10 @@ set_secret() {
 }
 
 create_group_and_vault() {
-  az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --tags $(tags) --output none
+  az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --tags "${TAG_ARGS[@]}" --output none
   if ! "$VAULT_EXISTS"; then
     az keyvault create --name "$KEY_VAULT" --resource-group "$RESOURCE_GROUP" --location "$LOCATION" \
-      --enable-rbac-authorization true --tags $(tags) --output none
+      --enable-rbac-authorization true --tags "${TAG_ARGS[@]}" --output none
   fi
   VAULT_ID="$(az keyvault show --name "$KEY_VAULT" --resource-group "$RESOURCE_GROUP" --query id --output tsv)"
 }
@@ -498,7 +498,7 @@ create_vm() {
     sed -e "s|REPO_URL|$REPO_URL|g" -e "s|VARIANT|$VARIANT|g" "$DEPLOY_DIR/cloud-init/fix-code-bridge.yaml" >"$WORK_DIR/cloud-init.yaml"
     az vm create --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --location "$LOCATION" \
       --image Ubuntu2404 --size "$VM_SIZE" --assign-identity --custom-data "$WORK_DIR/cloud-init.yaml" \
-      --nsg-rule NONE --admin-username azureuser --generate-ssh-keys --tags $(tags) --output none
+      --nsg-rule NONE --admin-username azureuser --generate-ssh-keys --tags "${TAG_ARGS[@]}" --output none
   fi
   PRINCIPAL_ID="$(az vm show --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --query identity.principalId --output tsv)"
   [[ -n "$PRINCIPAL_ID" ]] || fail "VM $VM_NAME has no system-assigned identity; run: az vm identity assign --resource-group $RESOURCE_GROUP --name $VM_NAME"

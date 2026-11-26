@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { RunnerError } from '../errors.js';
 
-export function buildCodexArgs({ model, effort, cwd, readonly, gitCommonDir, allowNetwork }) {
+function buildCodexArgs({ model, effort, cwd, readonly, gitCommonDir, allowNetwork }) {
   const args = [
     'exec', '--json', '--cd', cwd, '--model', model,
     '--sandbox', readonly ? 'read-only' : 'workspace-write',

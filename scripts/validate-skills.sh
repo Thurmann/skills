@@ -5,14 +5,15 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 codex_root="${CODEX_HOME:-$HOME/.codex}"
 validator="$codex_root/skills/.system/skill-creator/scripts/quick_validate.py"
 
-if [[ ! -f "$validator" ]]; then
-  echo "Codex skill-creator validator not found: $validator" >&2
-  exit 2
+# The Codex validator is optional: use it only when it exists and PyYAML is importable.
+use_codex=0
+if [[ -f "$validator" ]] && python3 -c 'import yaml' >/dev/null 2>&1; then
+  use_codex=1
 fi
 found=0
 for skill_dir in "$repo_root"/skills/*; do
   [[ -d "$skill_dir" && -f "$skill_dir/SKILL.md" ]] || continue
-  if python3 -c 'import yaml' >/dev/null 2>&1; then
+  if [[ "$use_codex" -eq 1 ]]; then
     python3 "$validator" "$skill_dir"
   elif command -v ruby >/dev/null 2>&1; then
     ruby -ryaml -e '
@@ -30,7 +31,7 @@ for skill_dir in "$repo_root"/skills/*; do
       puts "#{data["name"]}: frontmatter PASS"
     ' "$skill_dir"
   else
-    echo "Need PyYAML for quick_validate.py or Ruby for the built-in fallback." >&2
+    echo "Need Ruby for the built-in validator (the Codex quick_validate.py with PyYAML is optional)." >&2
     exit 2
   fi
   found=1

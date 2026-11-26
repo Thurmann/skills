@@ -161,5 +161,3 @@ export class Store {
     this.db.close();
   }
 }
-
-export default Store;

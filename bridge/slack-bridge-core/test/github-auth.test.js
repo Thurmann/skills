@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { command, configureGitHubAuth, checkGitHubTokenFile } from '../src/git.js';
+import { command, configureGitHubAuth, readGitHubToken } from '../src/git.js';
 
 const MINUTE = 60000;
 // Fake CLI: records each run in a marker file and prints the token variables it received.
@@ -73,7 +73,7 @@ test('without a token file the inherited environment passes through unchanged', 
   assert.deepEqual(JSON.parse(await command(f.gh, ['api'])), { GH_TOKEN: 'stale-env', GITHUB_TOKEN: 'stale-env-2' });
 });
 
-test('app mode rejects a token file older than one hour and checkGitHubTokenFile applies the 55 minute doctor limit', async t => {
+test('app mode rejects a token file older than one hour and readGitHubToken applies the 55 minute doctor limit', async t => {
   const f = fixture(t);
   configureGitHubAuth({ githubTokenFile: f.tokenFile, githubAuth: 'app', ghPath: f.gh });
   fs.writeFileSync(f.tokenFile, 'ghs_app\n');
@@ -87,8 +87,8 @@ test('app mode rejects a token file older than one hour and checkGitHubTokenFile
   // fraction of a millisecond older on Linux, which made this assertion flaky in CI.
   const inside = new Date(now - 55 * MINUTE + 1000);
   fs.utimesSync(f.tokenFile, inside, inside);
-  assert.equal(checkGitHubTokenFile(f.tokenFile, { maxAgeMs: 55 * MINUTE, now }), 'ghs_app');
+  assert.equal(readGitHubToken(f.tokenFile, { maxAgeMs: 55 * MINUTE, now }), 'ghs_app');
   fs.utimesSync(f.tokenFile, new Date(now - 56 * MINUTE), new Date(now - 56 * MINUTE));
-  assert.throws(() => checkGitHubTokenFile(f.tokenFile, { maxAgeMs: 55 * MINUTE, now }), /minutes old \(limit 55\)/);
-  assert.equal(checkGitHubTokenFile(f.tokenFile), 'ghs_app');
+  assert.throws(() => readGitHubToken(f.tokenFile, { maxAgeMs: 55 * MINUTE, now }), /minutes old \(limit 55\)/);
+  assert.equal(readGitHubToken(f.tokenFile), 'ghs_app');
 });

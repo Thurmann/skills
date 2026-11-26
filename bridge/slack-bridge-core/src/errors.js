@@ -1,16 +1,17 @@
 export class RunnerError extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, options) {
+    super(message, options);
     this.name = 'RunnerError';
     this.code = code;
   }
 }
 
 const SECRET_PATTERNS = [
-  [/xox[baprs]-[A-Za-z0-9-]+|xapp-[A-Za-z0-9-]+/g, '[redacted]'],
+  // Every Slack token family: xoxb/xoxp/xoxa/xoxr/xoxs plus rotation (xoxe), client (xoxc), cookie (xoxd) and app (xapp) tokens.
+  [/x(?:ox[a-z]|app)-[A-Za-z0-9-]+/g, '[redacted]'],
   [/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, '[redacted]'],
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{10,}|\bgithub_pat_[A-Za-z0-9_]{10,}/g, '[redacted]'],
-  [/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]'],
+  [/\bBearer\s+\S+/gi, 'Bearer [redacted]'],
   [/\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_]*\s*[=:]\s*)\S+/gi, '$1[redacted]'],
   [/\/\/[^\s/@:]+:[^\s/@]+@/g, '//[redacted]@'],
 ];

@@ -6,6 +6,11 @@ import { errorDetail } from './errors.js';
 
 let githubAuth = { tokenFile: null, app: false, ghPath: 'gh' };
 const APP_TOKEN_MAX_AGE_MS = 60 * 60000;
+const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
+const STDOUT_LIMIT_CHARS = 2000000;
+const STDERR_TAIL_CHARS = 16384;
+const KILL_GRACE_MS = 750; // SIGTERM to SIGKILL
+const KILL_SETTLE_MS = 100; // wait after SIGKILL before reporting termination
 /** Set once at startup from config; a null token file leaves the environment exactly as before. */
 export function configureGitHubAuth({ githubTokenFile, githubAuth: mode, ghPath } = {}) { githubAuth = { tokenFile: githubTokenFile || null, app: mode === 'app', ghPath: ghPath || 'gh' }; }
 const usesGitHub = executable => executable === githubAuth.ghPath || ['git', 'gh'].includes(path.basename(executable));
@@ -23,8 +28,7 @@ export function readGitHubToken(file, { maxAgeMs, now = Date.now() } = {}) {
   if (!/^\S+$/.test(token)) throw new Error(`GitHub token file ${file} must contain exactly one token.`);
   return token;
 }
-export function checkGitHubTokenFile(file, options) { return readGitHubToken(file, options); }
-export function commandEnv(executable) {
+function commandEnv(executable) {
   const result = {};
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'SSH_AUTH_SOCK', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST']) {
     if (process.env[key]) result[key] = process.env[key];
@@ -37,7 +41,7 @@ export function commandEnv(executable) {
   result.GIT_TERMINAL_PROMPT = '0';
   return result;
 }
-export function command(executable, args, { cwd, signal, timeout = 120000 } = {}) {
+export function command(executable, args, { cwd, signal, timeout = DEFAULT_COMMAND_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Command canceled.')); return; }
     let env;
@@ -45,14 +49,14 @@ export function command(executable, args, { cwd, signal, timeout = 120000 } = {}
     const child = spawn(executable, args, { cwd, env, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', failure, killTimer, settled = false, termination;
     let finishTermination;
-    const kill = name => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, name); else child.kill(name); } catch {} };
-    const terminate = message => { if (failure || settled) return; failure = message; termination = new Promise(resolve => { finishTermination = resolve; }); kill('SIGTERM'); killTimer = setTimeout(() => { kill('SIGKILL'); setTimeout(finishTermination, 100); }, 750); };
+    const kill = name => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, name); else child.kill(name); } catch {} }; // The process may already be gone.
+    const terminate = message => { if (failure || settled) return; failure = message; termination = new Promise(resolve => { finishTermination = resolve; }); kill('SIGTERM'); killTimer = setTimeout(() => { kill('SIGKILL'); setTimeout(finishTermination, KILL_SETTLE_MS); }, KILL_GRACE_MS); };
     const abort = () => terminate('Command canceled; inspect preserved task state.');
     const timer = setTimeout(() => terminate('Command timed out; inspect local command state.'), timeout);
     const cleanup = () => { settled = true; clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', abort); };
     signal?.addEventListener('abort', abort, { once: true });
-    child.stdout.on('data', chunk => { stdout += chunk; if (stdout.length > 2000000) terminate('Command exceeded its output limit.'); });
-    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16384); }); // Only a redacted tail reaches Slack.
+    child.stdout.on('data', chunk => { stdout += chunk; if (stdout.length > STDOUT_LIMIT_CHARS) terminate('Command exceeded its output limit.'); });
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-STDERR_TAIL_CHARS); }); // Only a redacted tail reaches Slack.
     child.on('error', error => { cleanup(); reject(new Error(`${path.basename(executable)} could not run (${error.code || 'error'}).`)); });
     child.on('close', async (code, exitSignal) => {
       if (termination) await termination;
@@ -168,13 +172,13 @@ export async function publishPR(config, task, result, outputDir, signal, { draft
     // Followups reuse the PR, so publish this job's mode/review outcome as a comment.
     const note = path.join(outputDir, 'pull-request-update.md');
     fs.writeFileSync(note, text, { mode: 0o600 });
-    await command(config.ghPath, ['pr', 'comment', String(existing.url || existing.number), '--repo', task.repository.github, '--body-file', note], { cwd: task.worktree, signal });
     const ref = String(existing.url || existing.number);
+    await command(config.ghPath, ['pr', 'comment', ref, '--repo', task.repository.github, '--body-file', note], { cwd: task.worktree, signal });
     if (draft && existing.isDraft !== true) await command(config.ghPath, ['pr', 'ready', ref, '--repo', task.repository.github, '--undo'], { cwd: task.worktree, signal });
     else if (!draft && existing.isDraft === true) await command(config.ghPath, ['pr', 'ready', ref, '--repo', task.repository.github], { cwd: task.worktree, signal });
     pr = await findPR(config, task, signal);
     if (await ensureLabels(config, task, signal)) {
-      await command(config.ghPath, ['pr', 'edit', String(existing.url || existing.number), '--repo', task.repository.github, ...labelArgs('--add-label')], { cwd: task.worktree, signal }).catch(() => {});
+      await command(config.ghPath, ['pr', 'edit', ref, '--repo', task.repository.github, ...labelArgs('--add-label')], { cwd: task.worktree, signal }).catch(() => {});
     }
   } else {
     const labeled = await ensureLabels(config, task, signal);

@@ -105,6 +105,8 @@ function statusUpdate(task, job, started) {
 const statusIcon = status => ({ queued: ':hourglass:', running: ':hourglass_flowing_sand:', succeeded: ':white_check_mark:', failed: ':x:', canceled: ':no_entry_sign:', interrupted: ':warning:' })[status] || ':grey_question:';
 // The precheck reason is model output, so it stays plain text.
 const precheckReason = job => job.precheck && plain(`Precheck: ${job.precheck.reason}`);
+// Remove a surrounding markdown code fence (``` or ```json) from model output.
+const stripFence = text => text.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
 // Reviewers sometimes wrap the verdict in prose ("Still reviewing…\n\n{...}"): take the last balanced object carrying a verdict key.
 function embeddedVerdict(text) {
   let found;
@@ -118,12 +120,12 @@ function embeddedVerdict(text) {
       else if (ch === '}' && --depth === 0) end = i;
     }
     if (end < 0) continue;
-    try { const value = JSON.parse(text.slice(start, end + 1)); if (value && typeof value === 'object' && 'verdict' in value) { found = value; start = end; } } catch {}
+    try { const value = JSON.parse(text.slice(start, end + 1)); if (value && typeof value === 'object' && 'verdict' in value) { found = value; start = end; } } catch {} // Not valid JSON: keep scanning from the next brace.
   }
   return found;
 }
 export function reviewJSON(text) {
-  const clean = text.trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+  const clean = stripFence(text);
   let result;
   try { result = JSON.parse(clean); } catch { result = embeddedVerdict(text); }
   if (!result) throw new Error('Reviewer did not return a valid verdict; no publication was attempted.');
@@ -164,7 +166,7 @@ const fastInstructions = 'Fast mode: start editing at once with minimal context;
 export function parsePrecheck(text) {
   const fallback = { mode: 'medium', model_mode: null, reason: 'Precheck output was unreadable; using medium with mandatory review.', predicted_files: null, estimated_minutes: null, predicted_areas: [], risk_flags: [], notes: [], confidence: 'medium' };
   let r;
-  try { r = JSON.parse(String(text ?? '').trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '')); } catch { return fallback; }
+  try { r = JSON.parse(stripFence(String(text ?? ''))); } catch { return fallback; }
   if (!r || typeof r !== 'object' || !precheckModes.includes(r.mode)) return fallback;
   const strings = v => (typeof v === 'string' ? [v] : Array.isArray(v) ? v : []).filter(x => typeof x === 'string').map(x => x.slice(0, 200)).slice(0, 20);
   const flags = strings(r.risk_flags).filter(flag => !/^\s*none\s*$/i.test(flag));
