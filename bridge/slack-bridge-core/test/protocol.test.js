@@ -29,7 +29,7 @@ test('parses mode and precheck_model on run and followup', () => {
 });
 
 test('rejects invalid and duplicate mode values', () => {
-  assert.throws(() => parseCommand('<@U123ABC> run repo=x mode=expert -- do it', BOT), /mode must be fast, simple, medium, or advanced/);
+  assert.throws(() => parseCommand('<@U123ABC> run repo=x mode=expert -- do it', BOT), /mode must be simple, medium, or advanced/);
   assert.throws(() => parseCommand('<@U123ABC> followup mode=simple mode=simple -- do it', BOT), /Duplicate option: mode/);
 });
 
@@ -94,7 +94,7 @@ test('bare status, help, cancel, retry remain commands and structured run keeps 
   assert.deepEqual(parseCommand('<@U123ABC> run mode=simple | x', BOT, { requireRepo: false }), {
     command: 'run', mode: 'simple', models: {}, request: 'x',
   });
-  assert.throws(() => parseCommand('<@U123ABC> run mode=bogus | x', BOT, { requireRepo: false }), /mode must be fast, simple, medium, or advanced/);
+  assert.throws(() => parseCommand('<@U123ABC> run mode=bogus | x', BOT, { requireRepo: false }), /mode must be simple, medium, or advanced/);
 });
 
 test('accepts |, em dash and en dash as the separator like --', () => {
@@ -144,7 +144,8 @@ test('runtime accepts every registered provider and rejects unknown names', () =
 });
 
 test('options without run or followup parse as requests before a separator', () => {
-  assert.deepEqual(parseCommand('<@U123ABC> mode=fast | Change X', BOT), { command: 'request', mode: 'fast', models: {}, request: 'Change X' });
+  assert.deepEqual(parseCommand('<@U123ABC> mode=simple | Change X', BOT), { command: 'request', mode: 'simple', models: {}, request: 'Change X' });
+  assert.throws(() => parseCommand('<@U123ABC> mode=fast | Change X', BOT), /mode must be simple, medium, or advanced/);
   assert.deepEqual(parseCommand('<@U123ABC> repo=demo runtime=claude model=opus architect_model=sonnet -- please use model=ignored', BOT), {
     command: 'request', repo: 'demo', runtime: 'claude', models: { all: 'opus', architect: 'sonnet' }, request: 'please use model=ignored',
   });
@@ -153,12 +154,12 @@ test('options without run or followup parse as requests before a separator', () 
 });
 
 test('key=value text without a separator stays a natural request with the full text', () => {
-  assert.deepEqual(parseCommand('<@U123ABC> mode=fast Change X', BOT), { command: 'request', models: {}, request: 'mode=fast Change X' });
-  assert.deepEqual(parseCommand('<@U123ABC> status mode=fast | x', BOT), { command: 'request', models: {}, request: 'status mode=fast | x' });
+  assert.deepEqual(parseCommand('<@U123ABC> mode=simple Change X', BOT), { command: 'request', models: {}, request: 'mode=simple Change X' });
+  assert.deepEqual(parseCommand('<@U123ABC> status mode=simple | x', BOT), { command: 'request', models: {}, request: 'status mode=simple | x' });
 });
 
 test('unknown or invalid options without run or followup throw', () => {
   assert.throws(() => parseCommand('<@U123ABC> foo=bar | Change X', BOT), /Unknown argument: foo=bar/);
-  assert.throws(() => parseCommand('<@U123ABC> mode=expert | Change X', BOT), /mode must be fast, simple, medium, or advanced/);
-  assert.throws(() => parseCommand('<@U123ABC> mode=fast mode=simple | Change X', BOT), /Duplicate option: mode/);
+  assert.throws(() => parseCommand('<@U123ABC> mode=expert | Change X', BOT), /mode must be simple, medium, or advanced/);
+  assert.throws(() => parseCommand('<@U123ABC> mode=simple mode=medium | Change X', BOT), /Duplicate option: mode/);
 });

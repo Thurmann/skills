@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { Bridge, parsePrecheck, isLogicFile, logicLines, fastReview, readonlySnapshot, reviewJSON } from '../src/bridge.js';
+import { Bridge, parsePrecheck, isLogicFile, readonlySnapshot, reviewJSON } from '../src/bridge.js';
 import { Store } from '../src/store.js';
 
 function fixture(t, options = {}) {
@@ -191,42 +191,41 @@ test('simple escalates only when more than six logic files change', async t => {
   assert.deepEqual(phases(g), ['precheck', 'implementer']);
 });
 
-test('explicit mode=fast skips precheck and review, compiles only, and publishes', async t => {
-  const f = fixture(t, { run: modeRun(pre('advanced'), 'done\nVERIFICATION: complete'), nameOnly: 'a.js\nb.js\nc.js\nd.js', numstat: '1\t1\ta.js\n1\t0\tb.js\n0\t1\tc.js\n1\t1\td.js\n9\t0\ta.test.js\n' });
-  await f.bridge.receive(event('<@UBOT> run repo=app mode=fast -- rename a flag')); await f.bridge.tick();
-  assert.deepEqual(phases(f), ['implementer']);
-  const prompt = f.calls[0].prompt;
-  assert.match(prompt, /Execution mode: fast/); assert.match(prompt, /Do not run tests; verify by compiling/);
-  assert.doesNotMatch(prompt, /run the complete test suite/); assert.doesNotMatch(prompt, /SCOPE_EXCEEDED/);
-  const job = f.store.listJobs()[0];
-  assert.equal(job.mode, 'fast'); assert.equal(job.calibration.changed_logic_lines, 4); assert.equal(job.calibration.reviewed, false);
-  assert.deepEqual(f.publishOptions, [{ draft: false, draftReason: null }]);
-  assert.match(f.published[0], /^Mode: fast\. Independent review: not required \(fast mode, 4 logic lines in 4 logic files within budget\)\. Logic lines\/files changed: 4\/4 \(fast budget 5\/4\)\. Tests: not run locally/);
-});
-
-test('fast mode reviews only at 50% over budget and never escalates', async t => {
-  const f = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a.js', numstat: '7\t2\ta.js\n' });
-  await f.bridge.receive(event('<@UBOT> run repo=app mode=fast -- tweak')); await f.bridge.tick();
-  assert.deepEqual(phases(f), ['implementer']);
-  assert.match(f.published[0], /over budget but under the 50% review threshold/);
-  const g = fixture(t, { run: modeRun(pre('simple')), nameOnly: 'a.js', numstat: '8\t0\ta.js\n' });
-  await g.bridge.receive(event('<@UBOT> run repo=app mode=fast -- tweak')); await g.bridge.tick();
-  assert.deepEqual(phases(g), ['implementer', 'reviewer']);
-  assert.equal(g.store.listJobs()[0].mode, 'fast');
-  assert.match(g.published[0], /^Mode: fast\. Independent review: passed/);
-});
-
-test('fast limits: lines count once per modified line and review starts at 8 lines or 6 files', () => {
-  assert.equal(logicLines('3\t2\tsrc/a.js\n1\t0\tREADME.md\n4\t4\ttest/a.test.js\n-\t-\tlogo.png\n'), 4);
-  assert.equal(fastReview(5, 4).reviewReason, null);
-  assert.equal(fastReview(7, 5).reviewReason, null);
-  assert.match(fastReview(8, 1).reviewReason, /50% over budget/);
-  assert.match(fastReview(6, 6).reviewReason, /50% over budget/);
-});
-
-test('the precheck can never select fast', () => {
+test('a precheck returning the removed fast mode falls back to medium', () => {
   assert.equal(parsePrecheck(pre('fast')).mode, 'medium');
   assert.match(parsePrecheck(pre('fast')).reason, /unreadable/);
+});
+
+test('tasks and jobs stored with the removed fast mode continue as simple', async t => {
+  const f = fixture(t, { run: modeRun(pre('simple')) });
+  const accepted = await f.bridge.receive(event()); await f.bridge.tick();
+  const taskId = accepted.taskId;
+  // A job queued before the upgrade still holds requestedMode fast.
+  await f.bridge.receive({ ...event('<@UBOT> followup -- also add a test', { ts: '123.2', thread_ts: '123.1' }), event_id: 'Ev2' });
+  f.store.saveJob({ ...f.store.jobsForTask(taskId).find(job => job.status === 'queued'), requestedMode: 'fast' });
+  let start = f.calls.length;
+  await f.bridge.tick();
+  let job = f.store.jobsForTask(taskId).at(-1);
+  assert.equal(job.mode, 'simple'); assert.deepEqual(f.calls.slice(start).map(c => c.phase), ['implementer']);
+  assert.match(f.calls[start].prompt, /Execution mode: simple/);
+  // A followup without a mode takes the stored task mode, which a task created before the upgrade may hold as fast.
+  f.store.saveTask({ ...f.store.getTask(taskId), mode: 'fast' });
+  await f.bridge.receive({ ...event('<@UBOT> followup -- also add a changelog line', { ts: '123.3', thread_ts: '123.1' }), event_id: 'Ev3' });
+  start = f.calls.length;
+  await f.bridge.tick();
+  job = f.store.jobsForTask(taskId).at(-1);
+  assert.equal(job.mode, 'simple'); assert.equal(f.store.getTask(taskId).mode, 'simple');
+  assert.deepEqual(f.calls.slice(start).map(c => c.phase), ['precheck', 'implementer']);
+  // A retry keeps the previous job's explicit mode, which may be stored as fast.
+  f.store.saveJob({ ...f.store.jobsForTask(taskId).at(-1), requestedMode: 'fast' });
+  f.store.saveTask({ ...f.store.getTask(taskId), status: 'failed' });
+  await f.bridge.receive({ ...event('<@UBOT> retry', { ts: '123.4', thread_ts: '123.1' }), event_id: 'Ev4' });
+  start = f.calls.length;
+  await f.bridge.tick();
+  job = f.store.jobsForTask(taskId).at(-1);
+  assert.equal(job.requestedMode, 'simple'); assert.equal(job.mode, 'simple');
+  assert.deepEqual(f.calls.slice(start).map(c => c.phase), ['implementer']);
+  assert.match(f.calls[start].prompt, /Execution mode: simple/);
 });
 
 test('medium within prediction skips review; exceeding the prediction requires it', async t => {
@@ -406,15 +405,15 @@ test('change counting starts at the last published commit', async t => {
 
 test('a run with no new edits publishes commits an earlier attempt left unpublished', async t => {
   let reviews = 0;
-  // The first fast run is far over budget, so it is reviewed and rejected; the retry adds nothing and is within budget.
-  const options = { run: async request => ({ text: request.phase === 'reviewer' ? JSON.stringify(++reviews === 1 ? { verdict: 'changes_requested', summary: 'Nothing was run', findings: ['run the suite'] } : { verdict: 'pass', summary: 'ok', findings: [] }) : 'done\nVERIFICATION: complete' }), startCommit: 'base\n', numstat: '20\t0\ta.js\n', revList: range => range === 'later..HEAD' ? '0\n' : '3\n' };
+  // The first run changes seven logic files, so simple escalates to medium and is reviewed and rejected; the retry adds nothing and stays simple.
+  const options = { run: async request => ({ text: request.phase === 'reviewer' ? JSON.stringify(++reviews === 1 ? { verdict: 'changes_requested', summary: 'Nothing was run', findings: ['run the suite'] } : { verdict: 'pass', summary: 'ok', findings: [] }) : 'done\nVERIFICATION: complete' }), startCommit: 'base\n', nameOnly: 'a.js\nb.js\nc.js\nd.js\ne.js\nf.js\ng.js', revList: range => range === 'later..HEAD' ? '0\n' : '3\n' };
   const f = fixture(t, options);
   f.config.maxRepairRounds = 0;
-  const accepted = await f.bridge.receive(event('<@UBOT> run repo=app mode=fast -- center the title'));
+  const accepted = await f.bridge.receive(event('<@UBOT> run repo=app mode=simple -- center the title'));
   await f.bridge.tick();
   assert.equal(f.store.getTask(accepted.taskId).status, 'failed');
   assert.equal(f.publications(), 0);
-  f.state.head = 'later\n'; options.numstat = '1\t1\ta.js\n';
+  f.state.head = 'later\n'; options.nameOnly = 'a.js';
   await f.bridge.receive({ ...event('<@UBOT> retry', { ts: '123.2', thread_ts: '123.1' }), event_id: 'Ev2' }); await f.bridge.tick();
   assert.equal(f.publications(), 1, 'the carried commits are published');
   assert.equal(f.store.listJobs().at(-1).calibration.review_reason, 'earlier review unresolved');
@@ -736,12 +735,12 @@ test('alias mode: a plain top-level mention replies with the alias-mode hint and
 
 test('top-level implicit options start a task with the mode and models applied', async t => {
   const f = fixture(t, { run: modeRun(pre('advanced')) }); channelMode(f);
-  const accepted = await f.bridge.receive(event('<@UBOT> mode=fast implementer_model=strong | rename a flag'));
+  const accepted = await f.bridge.receive(event('<@UBOT> mode=simple implementer_model=strong | rename a flag'));
   assert.equal(accepted.accepted, true);
   const task = f.store.getTask(accepted.taskId);
   assert.equal(task.initialRequest, 'rename a flag');
   assert.equal(task.models.implementer, 'strong');
-  assert.equal(f.store.listJobs()[0].requestedMode, 'fast');
+  assert.equal(f.store.listJobs()[0].requestedMode, 'simple');
   assert.equal((await f.bridge.receive({ ...event('<@UBOT> repo=app | rename a flag', { ts: '124.1' }), event_id: 'Ev2' })).accepted, true);
   await f.bridge.flushOutbox();
   assert.ok(f.posts.some(p => /Repository context comes from this channel name/.test(p.text)));
