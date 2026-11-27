@@ -488,6 +488,16 @@ class GitGuardTests(unittest.TestCase):
                                   'head': head, 'restored': True, 'branch': branch,
                                   'checkout_branch': 'main'})
 
+    def test_finish_ignores_follow_tags_config(self):
+        remote = self.add_bare_remote()
+        self.git(self.repo, 'tag', '-a', 'v1', '-m', 'Fixture tag')
+        self.git(self.repo, 'config', 'push.followTags', 'true')
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        self.guard('finish', '--state', state['state'])
+        self.assertEqual(self.git(remote, 'for-each-ref', '--format=%(refname)'),
+                         'refs/heads/'+state['branch'])
+
     def test_finish_refuses_worktree_state(self):
         remote = self.add_bare_remote()
         state = self.start()
