@@ -374,7 +374,9 @@ def finish(state_path, remote='origin'):
     # Verify the switch back is possible before anything is pushed.
     ensure_switch_safe(repo, 'HEAD', original_target(repo, state),
                        'move or remove those files, then retry.')
-    git(repo, 'push', '-u', remote, 'HEAD:refs/heads/' + state['branch'])
+    # Override push.followTags and push.recurseSubmodules so only the task branch is sent.
+    git(repo, 'push', '--no-follow-tags', '--recurse-submodules=no', '-u', remote,
+        'HEAD:refs/heads/' + state['branch'])
     switch_to_original(repo, state)
     state.update(in_place=False, restored=True, pushed_remote=remote, pushed_head=head)
     save_state(state_path, state)
