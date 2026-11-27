@@ -2,9 +2,11 @@
 """Create isolated task branches and detect protected-ref/history changes.
 
 This is an explicit checkpoint helper, not a hook or enforcement sandbox.
-No command pushes, rebases, resets, or amends. Commands never change the
-original checkout, except `start --in-place`, `relocate`, and `restore`, which
-may switch its branch, and only when its tracked files are clean.
+Only `finish` pushes, and only the task branch to an explicit
+`refs/heads/<task-branch>` refspec. No command rebases, resets, or amends.
+Commands never change the original checkout, except `start --in-place`,
+`relocate`, `restore`, and `finish`, which may switch its branch, and only when
+its tracked files are clean.
 Bootstrap initializes only a new empty repository with an empty main baseline.
 """
 import argparse
@@ -56,8 +58,18 @@ def ref_tip(repo, ref):
     return git(repo, 'rev-parse', '--verify', ref, optional=True)
 
 
-def remote_digest(repo):
-    config = git(repo, 'config', '--get-regexp', r'^remote\..*\.(url|pushurl)$',
+REMOTE_DIGEST_PATTERNS = {
+    # Version 1: remote URLs only (states written before version 2).
+    1: r'^remote\..*\.(url|pushurl)$',
+    # Version 2: also config that can silently reroute a push.
+    2: r'^(remote\..*\.(url|pushurl)|remote\.pushdefault|url\..*\.(insteadof|pushinsteadof)|branch\..*\.pushremote)$',
+}
+
+
+def remote_digest(repo, version=2):
+    if version not in REMOTE_DIGEST_PATTERNS:
+        raise GuardError('Unsupported remote digest version.')
+    config = git(repo, 'config', '--get-regexp', REMOTE_DIGEST_PATTERNS[version],
                  optional=True) or ''
     return hashlib.sha256(config.encode()).hexdigest()
 
@@ -173,7 +185,7 @@ def check(state_path):
     for ref, before in state['protected_refs'].items():
         if ref_tip(worktree, ref) != before:
             raise GuardError('Protected ref changed: ' + ref + '. Preserve state; do not reset it.')
-    if remote_digest(worktree) != state['remote_digest']:
+    if remote_digest(worktree, state.get('remote_digest_version', 1)) != state['remote_digest']:
         raise GuardError('Remote routing configuration changed; validate the delivery target before proceeding.')
     ensure_no_unfinished_operation(worktree)
     head = git(worktree, 'rev-parse', '--verify', 'HEAD')
@@ -256,7 +268,8 @@ def start(repo, name, requested_base=None, destination=None, protect=(), in_plac
     state = {'version': 1, 'original_repo': str(repo), 'git_common_dir': str(common),
              'worktree': str(worktree), 'branch': branch, 'base_ref': base,
              'base_commit': commit, 'checkpoint_head': commit,
-             'protected_refs': protected, 'remote_digest': digest, **extra}
+             'protected_refs': protected, 'remote_digest': digest,
+             'remote_digest_version': 2, **extra}
     state_path = common / 'fix-code' / (identity + '.json')
     try:
         save_state(state_path, state)
@@ -282,11 +295,17 @@ def load_in_place_state(state_path):
     return state_path, state, repo
 
 
-def switch_to_original(repo, state):
+def original_target(repo, state):
     branch = state.get('original_branch')
     target = ref_tip(repo, 'refs/heads/' + branch) if branch else state['original_head']
     if not target:
         raise GuardError('The original branch no longer exists; nothing was switched.')
+    return target
+
+
+def switch_to_original(repo, state):
+    branch = state.get('original_branch')
+    target = original_target(repo, state)
     ensure_switch_safe(repo, 'HEAD', target,
                        'move or remove those files, then retry.')
     if branch:
@@ -342,6 +361,29 @@ def restore(state_path):
                                    optional=True)}
 
 
+def finish(state_path, remote='origin'):
+    resolved = Path(state_path).expanduser().resolve()
+    state = load_state(resolved)
+    if not state.get('in_place'):
+        raise GuardError('finish is only for in-place tasks; push worktree tasks explicitly.')
+    if (not remote or remote.startswith('-') or
+            git(Path(state['worktree']), 'remote', 'get-url', remote, optional=True) is None):
+        raise GuardError('Unknown remote: ' + remote)
+    state_path, state, repo = load_in_place_state(resolved)
+    head = git(repo, 'rev-parse', '--verify', 'HEAD')
+    # Verify the switch back is possible before anything is pushed.
+    ensure_switch_safe(repo, 'HEAD', original_target(repo, state),
+                       'move or remove those files, then retry.')
+    git(repo, 'push', '-u', remote, 'HEAD:refs/heads/' + state['branch'])
+    switch_to_original(repo, state)
+    state.update(in_place=False, restored=True, pushed_remote=remote, pushed_head=head)
+    save_state(state_path, state)
+    return {'ok': True, 'pushed': 'refs/heads/' + state['branch'], 'remote': remote,
+            'head': head, 'restored': True, 'branch': state['branch'],
+            'checkout_branch': git(repo, 'symbolic-ref', '--quiet', '--short', 'HEAD',
+                                   optional=True)}
+
+
 def bootstrap(repo, name, destination=None):
     repo = Path(repo).expanduser().resolve()
     if repo.exists() and (not repo.is_dir() or any(repo.iterdir())):
@@ -375,6 +417,9 @@ def main():
         command.add_argument('--state', required=True)
         if name == 'relocate':
             command.add_argument('--worktree')
+    finish_command = commands.add_parser('finish')
+    finish_command.add_argument('--state', required=True)
+    finish_command.add_argument('--remote', default='origin')
     args = parser.parse_args()
     try:
         if args.command == 'check':
@@ -383,6 +428,8 @@ def main():
             output = relocate(args.state, args.worktree)
         elif args.command == 'restore':
             output = restore(args.state)
+        elif args.command == 'finish':
+            output = finish(args.state, args.remote)
         elif args.command == 'bootstrap':
             output = bootstrap(args.repo, args.name, args.worktree)
         else:
