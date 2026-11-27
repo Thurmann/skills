@@ -461,6 +461,101 @@ class GitGuardTests(unittest.TestCase):
             self.git(self.repo, 'switch', 'feature-x')
             self.git(self.repo, 'branch', '-D', state['branch'])
 
+    def add_bare_remote(self):
+        self.git(self.root, 'init', '--bare', '--quiet', 'remote.git')
+        remote = self.root/'remote.git'
+        self.git(self.repo, 'remote', 'add', 'origin', str(remote))
+        return remote
+
+    def test_finish_pushes_only_task_branch_and_restores(self):
+        remote = self.add_bare_remote()
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        head = self.git(self.repo, 'rev-parse', 'HEAD')
+        result = self.guard('finish', '--state', state['state'])
+        branch = state['branch']
+        self.assertEqual(self.git(remote, 'for-each-ref', '--format=%(refname)'),
+                         'refs/heads/'+branch)
+        self.assertEqual(self.git(remote, 'rev-parse', 'refs/heads/'+branch), head)
+        self.assertEqual(self.git(self.repo, 'config', '--get', 'branch.'+branch+'.remote'), 'origin')
+        self.assertEqual(self.git(self.repo, 'config', '--get', 'branch.'+branch+'.merge'),
+                         'refs/heads/'+branch)
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), 'main')
+        saved = json.loads(Path(state['state']).read_text())
+        self.assertTrue(saved['restored'])
+        self.assertFalse(saved['in_place'])
+        self.assertEqual(result, {'ok': True, 'pushed': 'refs/heads/'+branch, 'remote': 'origin',
+                                  'head': head, 'restored': True, 'branch': branch,
+                                  'checkout_branch': 'main'})
+
+    def test_finish_refuses_worktree_state(self):
+        remote = self.add_bare_remote()
+        state = self.start()
+        self.task_commit(state)
+        result = self.guard('finish', '--state', state['state'], expected=2)
+        self.assertIn('finish is only for in-place tasks', result['error'])
+        self.assertEqual(self.git(remote, 'for-each-ref', '--format=%(refname)'), '')
+
+    def test_finish_refuses_dirty_tracked_changes(self):
+        remote = self.add_bare_remote()
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        (self.repo/'app.txt').write_text('uncommitted\n')
+        result = self.guard('finish', '--state', state['state'], expected=2)
+        self.assertIn('changes to tracked files', result['error'])
+        self.assertEqual(self.git(remote, 'for-each-ref', '--format=%(refname)'), '')
+        self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+
+    def test_finish_refuses_unknown_or_option_like_remote(self):
+        remote = self.add_bare_remote()
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        for flag in ('--remote=nope', '--remote=-x', '--remote='):
+            result = self.guard('finish', '--state', state['state'], flag, expected=2)
+            self.assertIn('Unknown remote', result['error'])
+            self.assertEqual(self.git(remote, 'for-each-ref', '--format=%(refname)'), '')
+            self.assertEqual(self.git(self.repo, 'branch', '--show-current'), state['branch'])
+        saved = json.loads(Path(state['state']).read_text())
+        self.assertTrue(saved['in_place'])
+        self.assertFalse(saved.get('restored', False))
+
+    def test_check_detects_new_rerouting_config(self):
+        keys = [
+            lambda branch: ('url.https://example.invalid/.insteadOf', 'ssh://example.invalid/'),
+            lambda branch: ('url.https://example.invalid/.pushInsteadOf', 'ssh://example.invalid/'),
+            lambda branch: ('remote.pushDefault', 'origin'),
+            lambda branch: ('branch.'+branch+'.pushRemote', 'origin'),
+        ]
+        for make in keys:
+            state = self.start()
+            key, value = make(state['branch'])
+            with self.subTest(key=key):
+                self.git(self.repo, 'config', key, value)
+                error = self.guard('check', '--state', state['state'], expected=2)['error']
+                self.assertIn('routing', error)
+                self.git(self.repo, 'config', '--unset', key)
+
+    def test_check_ignores_branch_upstream_from_push(self):
+        remote = self.add_bare_remote()
+        state = self.start_in_place()
+        self.commit_in(self.repo)
+        self.git(self.repo, 'push', '-u', 'origin', 'HEAD:refs/heads/'+state['branch'])
+        self.guard('check', '--state', state['state'])
+
+    def test_legacy_state_keeps_version_one_digest(self):
+        remote = self.add_bare_remote()
+        state = self.start()
+        sys.path.insert(0, str(GUARD.parent))
+        import git_guard
+        saved = json.loads(Path(state['state']).read_text())
+        saved.pop('remote_digest_version')
+        saved['remote_digest'] = git_guard.remote_digest(state['worktree'], 1)
+        Path(state['state']).write_text(json.dumps(saved))
+        self.git(self.repo, 'config', 'url.https://example.invalid/.insteadOf', 'ssh://example.invalid/')
+        self.guard('check', '--state', state['state'])
+        self.git(self.repo, 'remote', 'set-url', 'origin', 'https://example.invalid/other.git')
+        self.assertIn('routing', self.guard('check', '--state', state['state'], expected=2)['error'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
